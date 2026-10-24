@@ -13,7 +13,7 @@ public class MigrationTests
     }
 
     [Fact]
-    public async Task Migrate_creates_the_three_tables_and_a_second_run_changes_nothing()
+    public async Task Migrate_creates_the_four_tables_and_a_second_run_changes_nothing()
     {
         var settings = await _db.NewDatabaseAsync(migrate: false);
         var connectionString = Database.ConnectionString(PostgresFixture.Config(settings));
@@ -23,18 +23,23 @@ public class MigrationTests
         await using var conn = await PostgresFixture.OpenAsync(settings);
         var tables = (await conn.QueryAsync<string>(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> 'schemaversions'")).ToHashSet();
-        Assert.Equal(new HashSet<string> { "devices", "tips", "admin_sessions" }, tables);
+        Assert.Equal(new HashSet<string> { "devices", "tips", "admin_sessions", "entries" }, tables);
 
-        await conn.ExecuteAsync("INSERT INTO devices (id, token_hash) VALUES (gen_random_uuid(), '\\x01')");
+        var deviceId = await conn.ExecuteScalarAsync<Guid>("INSERT INTO devices (id, token_hash) VALUES (gen_random_uuid(), '\\x01') RETURNING id");
+        await conn.ExecuteAsync(
+            "INSERT INTO entries (id, device_id, text, client_created_at, request_hash) VALUES (gen_random_uuid(), @deviceId, 'keep me too', now(), '\\xabcd')",
+            new { deviceId });
         await conn.ExecuteAsync("INSERT INTO tips (text, status) VALUES ('keep me', 'published')");
         var journalBefore = await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM schemaversions");
 
         Assert.Equal(0, Migrator.Run(connectionString));
 
         Assert.Equal(journalBefore, await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM schemaversions"));
-        Assert.Equal(3, journalBefore);
+        Assert.Equal(4, journalBefore);
         Assert.Equal(1, await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM devices"));
         Assert.Equal("keep me", await conn.ExecuteScalarAsync<string>("SELECT text FROM tips"));
+        Assert.Equal("keep me too", await conn.ExecuteScalarAsync<string>("SELECT text FROM entries"));
+        Assert.Equal(new byte[] { 0xab, 0xcd }, await conn.ExecuteScalarAsync<byte[]>("SELECT request_hash FROM entries"));
     }
 
     [Fact]
@@ -64,5 +69,46 @@ public class MigrationTests
             conn.ExecuteAsync("INSERT INTO tips (text, status) VALUES ('ok', 'archived')"));
         await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
             conn.ExecuteAsync("INSERT INTO tips (text, status) VALUES ('', 'draft')"));
+    }
+
+    [Fact]
+    public async Task The_database_rejects_an_entry_for_an_unknown_device_empty_or_long_text_and_a_null_hash()
+    {
+        var settings = await _db.NewDatabaseAsync();
+        await using var conn = await PostgresFixture.OpenAsync(settings);
+        var deviceId = await conn.ExecuteScalarAsync<Guid>("INSERT INTO devices (id, token_hash) VALUES (gen_random_uuid(), '\\x01') RETURNING id");
+
+        await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
+            conn.ExecuteAsync(
+                "INSERT INTO entries (id, device_id, text, client_created_at, request_hash) VALUES (gen_random_uuid(), gen_random_uuid(), 'ok', now(), '\\x01')"));
+        await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
+            conn.ExecuteAsync(
+                "INSERT INTO entries (id, device_id, text, client_created_at, request_hash) VALUES (gen_random_uuid(), @deviceId, '', now(), '\\x01')",
+                new { deviceId }));
+        await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
+            conn.ExecuteAsync(
+                "INSERT INTO entries (id, device_id, text, client_created_at, request_hash) VALUES (gen_random_uuid(), @deviceId, repeat('x', 2001), now(), '\\x01')",
+                new { deviceId }));
+        await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
+            conn.ExecuteAsync(
+                "INSERT INTO entries (id, device_id, text, client_created_at, request_hash) VALUES (gen_random_uuid(), @deviceId, 'ok', now(), NULL)",
+                new { deviceId }));
+        Assert.Equal(0, await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM entries"));
+    }
+
+    [Fact]
+    public async Task Deleting_a_device_deletes_its_entries()
+    {
+        var settings = await _db.NewDatabaseAsync();
+        await using var conn = await PostgresFixture.OpenAsync(settings);
+        var deviceId = await conn.ExecuteScalarAsync<Guid>("INSERT INTO devices (id, token_hash) VALUES (gen_random_uuid(), '\\x01') RETURNING id");
+        var otherId = await conn.ExecuteScalarAsync<Guid>("INSERT INTO devices (id, token_hash) VALUES (gen_random_uuid(), '\\x02') RETURNING id");
+        await conn.ExecuteAsync(
+            "INSERT INTO entries (id, device_id, text, client_created_at, request_hash) VALUES (gen_random_uuid(), @deviceId, 'mine', now(), '\\x01'), (gen_random_uuid(), @otherId, 'theirs', now(), '\\x01')",
+            new { deviceId, otherId });
+
+        await conn.ExecuteAsync("DELETE FROM devices WHERE id = @deviceId", new { deviceId });
+
+        Assert.Equal("theirs", await conn.ExecuteScalarAsync<string>("SELECT text FROM entries"));
     }
 }

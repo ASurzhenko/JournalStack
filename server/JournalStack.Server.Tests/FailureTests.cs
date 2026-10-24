@@ -35,6 +35,20 @@ public class FailureTests
         Assert.False(json.TryGetProperty("token", out _));
     }
 
+    // The auth filter needs the database before the entry handler runs, so this covers the filter and the middleware mapping.
+    // The handler's own persist path is covered by the renamed-table test in EntryTests.
+    [Fact]
+    public async Task When_the_database_is_down_an_entry_post_answers_503_and_never_2xx()
+    {
+        await using var app = await StartWithDatabaseDownAsync();
+
+        var response = await app.ClientFor(new string('a', Tokens.Length)).PostEntryAsync(EntryRequests.Golden());
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("database_unavailable", json.GetProperty("code").GetString());
+    }
+
     [Fact]
     public async Task When_the_database_is_down_health_stays_up_and_ready_says_503()
     {
