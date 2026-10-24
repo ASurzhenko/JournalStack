@@ -9,6 +9,9 @@ public static class Api
 {
     private const string BearerPrefix = "Bearer ";
 
+    // The auth filter stores the calling device id here for the handlers behind it.
+    internal const string DeviceIdKey = "DeviceId";
+
     public static void Map(WebApplication app)
     {
         app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
@@ -48,6 +51,8 @@ public static class Api
                 "SELECT id, text, updated_at AS updatedat FROM tips WHERE status = 'published' ORDER BY updated_at DESC, id LIMIT 1");
             return tip is null ? Results.NoContent() : Results.Ok(tip);
         });
+
+        Entries.Map(device);
     }
 
     private static async ValueTask<object?> RequireDevice(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
@@ -75,6 +80,7 @@ public static class Api
             return Problems.Create(429, "rate_limited", "Too many requests from this device. Try again later.");
         }
 
+        http.Items[DeviceIdKey] = deviceId.Value;
         return await next(context);
     }
 }

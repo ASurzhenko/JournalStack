@@ -153,6 +153,16 @@ public sealed class TestRoutes : IStartupFilter
     {
         return app =>
         {
+            // TestServer buffers every body and sets Content-Length itself. A request marked with this header
+            // reaches the server without one, as a chunked request through a proxy would.
+            app.Use(async (context, nextMiddleware) =>
+            {
+                if (context.Request.Headers.ContainsKey("X-Test-Chunked"))
+                {
+                    context.Request.ContentLength = null;
+                }
+                await nextMiddleware(context);
+            });
             next(app);
             app.Use(async (context, nextMiddleware) =>
             {
@@ -160,6 +170,9 @@ public sealed class TestRoutes : IStartupFilter
                 {
                     case "/test/scheme":
                         await context.Response.WriteAsync($"{context.Request.Scheme} {context.Connection.RemoteIpAddress}");
+                        break;
+                    case "/test/body-length":
+                        await context.Response.WriteAsync(context.Request.ContentLength?.ToString() ?? "none");
                         break;
                     case "/test/boom":
                         throw new InvalidOperationException("SECRETMESSAGE");
@@ -222,5 +235,59 @@ public sealed class TestApp : WebApplicationFactory<Program>
         var client = CreateClient();
         client.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
         return client;
+    }
+}
+
+// Builders for entry requests. The golden request is fixed so its stored hash can be compared with a digest computed outside the code.
+public static class EntryRequests
+{
+    public const string GoldenId = "0b8e0d4e-6d0f-4f3b-9a53-0f2b7b6f3a11";
+    public const string GoldenText = "Hello\nworld";
+    public const string GoldenCreatedAt = "2026-10-24T12:00:00Z";
+    public const string GoldenDigest = "b72d21ada45386dcd5494bc0bf731d0ee32750ed23a321b995b67670cad060ad";
+
+    public static string Body(string id, string text, string createdAt)
+    {
+        return System.Text.Json.JsonSerializer.Serialize(new { id, text, clientCreatedAt = createdAt });
+    }
+
+    public static string Golden()
+    {
+        return Body(GoldenId, GoldenText, GoldenCreatedAt);
+    }
+
+    public static StringContent Json(string body)
+    {
+        return new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+    }
+
+    public static Task<HttpResponseMessage> PostEntryAsync(this HttpClient client, string body)
+    {
+        return client.PostAsync("/api/v1/entries", Json(body));
+    }
+}
+
+// Sends a small body but declares a large Content-Length, to reach the check that runs before the body is read.
+public sealed class DeclaredLengthContent : HttpContent
+{
+    private readonly byte[] _bytes;
+    private readonly long _declared;
+
+    public DeclaredLengthContent(string body, long declared)
+    {
+        _bytes = System.Text.Encoding.UTF8.GetBytes(body);
+        _declared = declared;
+        Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+    }
+
+    protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context)
+    {
+        return stream.WriteAsync(_bytes, 0, _bytes.Length);
+    }
+
+    protected override bool TryComputeLength(out long length)
+    {
+        length = _declared;
+        return true;
     }
 }

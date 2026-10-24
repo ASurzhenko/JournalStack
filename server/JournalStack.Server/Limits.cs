@@ -42,9 +42,13 @@ public sealed class Limits
     // One cap per device across all device endpoints.
     public RateLimiter DeviceRequests { get; }
 
+    // One cap per device on entry posts. Retries and refused requests count too.
+    public RateLimiter EntryPosts { get; }
+
     public Limits(TimeProvider clock)
     {
         Registrations = new RateLimiter(30, TimeSpan.FromMinutes(1), clock);
         DeviceRequests = new RateLimiter(600, TimeSpan.FromHours(1), clock);
+        EntryPosts = new RateLimiter(60, TimeSpan.FromHours(1), clock);
     }
 }
