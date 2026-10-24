@@ -85,8 +85,8 @@ owner in his own words. Status says whether the decision is already in the code.
 ## D-010 No per-IP limits
 
 - Status: from slot 1.
-- Choice: One global cap on device registration (30 per minute) and a per-device hourly cap on entries. Both
-  live in memory and reset on deploy.
+- Choice: One global cap on device registration (30 per minute), a per-device cap of 600 requests per hour on
+  all device endpoints, and a per-device cap of 60 entry posts per hour. All live in memory and reset on deploy.
 - Why: The proxy address ranges are not known, and trusting the forwarded IP header would let anyone fake it.
 - Cost: One abuser can use the whole registration cap. Limits reset on every deploy and do not span replicas.
 - Revisit if: There is more than one replica, or real traffic.
@@ -118,8 +118,46 @@ owner in his own words. Status says whether the decision is already in the code.
 
 ## D-014 Device deletion by cascade
 
-- Status: planned for slot 2.
+- Status: cascade foreign key in 0004 and tested. The route comes in a later slice.
 - Choice: `DELETE /api/v1/devices/me` removes the device and, by foreign key cascade, its entries and images.
 - Why: It is the plain answer to a request to delete a person's data.
 - Cost: There is no undo.
 - Revisit if: Soft delete or an audit trail is needed.
+
+## D-015 Migration numbers
+
+- Status: 0004 in this slice.
+- Choice: 0004 `entries`, 0005 reserved for `entry_images`, 0006 `add_entry_mood` is the live change. The rule:
+  the images slice lands in `main` before the live change is first applied on Railway.
+- Why: RUNBOOK and the call script name the live-change file, and a fixed number keeps them stable and stops two
+  branches from claiming one number.
+- Cost: A reserved gap. If images are cut, the live change takes 0005 and the file is renamed before its first
+  Railway run.
+- Revisit if: Images are cut, or the order of slices changes.
+
+## D-016 The request hash covers the fields as received
+
+- Status: in use from this slice.
+- Choice: SHA-256 over the raw text, a newline, the raw date, a newline, then optional parts appended in later
+  slices. The format is frozen and a test pins it to digests computed outside the code. The insert runs in one
+  transaction with `ReadCommitted` written in the code, because the images slice puts the image row in the same
+  transaction.
+- Why: A retry must match a row stored by an older version of the server, and the trimming rules may change.
+- Cost: `" a"` and `"a"` are different requests for the same id. A client must resend the same strings. The
+  transaction holds one statement in this slice.
+- Revisit if: Never for stored rows. A new format needs a new column, not a change to this one.
+
+## D-017 Entry limits and checks
+
+- Status: in use from this slice.
+- Choice: 60 posts per device per hour, a 16 KiB body, 2000 characters (UTF-16 units), and `clientCreatedAt`
+  checked for format only.
+- Why: A person writes a few entries a day and a script a few dozen, and a stuck loop should stop. The body cap is
+  the largest legal request without padding. The date is display only, so a wrong phone clock must not cost the
+  entry.
+- Cost: A burst above 60 an hour is refused with a retryable 429. Retries count against the cap. There is no
+  `Retry-After`, the windows are fixed, the cap resets on deploy, and there is no per-IP limit. A request padded
+  with outer whitespace past 16 KiB is refused with 413. A date in year 0001 or 9999 is stored as sent (the driver
+  keeps it as `-infinity` or `infinity`) and is read back without a `Z`. An entry that conflicts on insert and then
+  cannot be found gives a 500 instead of a dedicated code.
+- Revisit if: Real usage shows up, there is more than one replica, or the admin needs sane dates.
