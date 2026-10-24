@@ -2,11 +2,11 @@
 
 ## Now
 
-- Current slot: 2, slice A (entries as text with the idempotency core) is coded and tested on `feat/server-core`.
-  It waits for the owner's review and commit. Slots 0 and 1 are in `main`.
+- Current slot: 3 (admin panel), planning. Slots 0, 1 and 2 slice A (entries as text with the idempotency core)
+  are in `main`.
 - Done: slot 0, slot 1 (server, migrations 0001-0003, tests), and slice A: migration 0004, `POST` and `GET`
   `/api/v1/entries`, entry cap, body cap, text checks, the tests and the mutation pass below.
-- Next step: slot 3 (admin). The images slice (0005) and
+- Next step: slot 3 (admin) on branch `feat/admin-panel`. The images slice (0005) and
   `DELETE /devices/me` come later.
 - Open questions: the recruiter's answer about their Railway stack; the exact wording of the 2024 production claim;
   whether to keep the reserved migration number 0005 (D-015).
