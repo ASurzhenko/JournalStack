@@ -1,0 +1,46 @@
+# Local stack: PostgreSQL, then `migrate`, then the server.
+# Needs a .env file (copy .env.example). Only PGPASSWORD must be set.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${PGUSER:-journal}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?copy .env.example to .env and set PGPASSWORD}
+      POSTGRES_DB: ${PGDATABASE:-journalstack}
+    ports:
+      - "127.0.0.1:5440:5432"
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Same command Railway runs as the pre-deploy step. Exits non-zero if a script fails.
+  migrate:
+    build: ./server
+    command: ["migrate"]
+    environment: &dbenv
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: ${PGUSER:-journal}
+      PGPASSWORD: ${PGPASSWORD}
+      PGDATABASE: ${PGDATABASE:-journalstack}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  server:
+    build: ./server
+    environment:
+      <<: *dbenv
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  dbdata:
