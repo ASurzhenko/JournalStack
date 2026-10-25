@@ -1,5 +1,4 @@
 using System.Net;
-using System.Text.RegularExpressions;
 
 namespace JournalStack.Server.Tests;
 
@@ -13,64 +12,76 @@ public class AdminPageTests
         _db = db;
     }
 
+    // Every admin answer except the stylesheet: login page, signed-in pages, redirects and refused posts.
     [Fact]
-    public async Task The_admin_page_is_served_with_a_content_policy_and_no_caching_and_the_folder_redirects()
-    {
-        await using var app = await TestApp.StartAdminAsync(_db);
-        var client = app.AdminClient();
-
-        var page = await client.GetAsync("/admin/");
-        var redirect = await client.GetAsync("/admin");
-
-        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
-        Assert.Equal("text/html", page.Content.Headers.ContentType!.MediaType);
-        var policy = string.Join(";", page.Headers.GetValues("Content-Security-Policy"));
-        Assert.Contains("default-src 'self'", policy);
-        Assert.Contains("frame-ancestors 'none'", policy);
-        Assert.Equal("no-cache", string.Join(",", page.Headers.GetValues("Cache-Control")));
-        Assert.Equal(HttpStatusCode.MovedPermanently, redirect.StatusCode);
-        Assert.Equal("/admin/", redirect.Headers.Location!.AbsolutePath);
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/admin/admin.js")).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/admin/missing.js")).StatusCode);
-    }
-
-    // A text check on the served files. It cannot prove the page is safe, only that none of the usual ways
-    // to write markup from text were added. The browser check with a script-like entry is the proof.
-    [Fact]
-    public async Task The_served_files_use_none_of_the_ways_to_write_markup_from_text()
-    {
-        await using var app = await TestApp.StartAdminAsync(_db);
-        var client = app.AdminClient();
-        var script = await client.GetStringAsync("/admin/admin.js");
-        var html = await client.GetStringAsync("/admin/");
-
-        foreach (var banned in new[] { "innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function" })
-        {
-            Assert.DoesNotContain(banned, script);
-            Assert.DoesNotContain(banned, html);
-        }
-        Assert.DoesNotMatch(@"<script(?![^>]*\ssrc=)", html);
-        Assert.DoesNotMatch(@"\son\w+\s*=", html);
-        Assert.DoesNotMatch(@"\sstyle\s*=", html);
-        Assert.Matches(new Regex(@"<script src=""admin\.js"">"), html);
-    }
-
-    [Fact]
-    public async Task Every_admin_api_answer_is_marked_as_not_to_be_cached()
+    public async Task Every_admin_answer_is_not_cached_and_carries_the_content_policy()
     {
         await using var app = await TestApp.StartAdminAsync(_db);
         var session = await app.LoginAsync();
+        var signedIn = app.AdminClient(session);
 
-        var unauthorized = await app.AdminClient().GetAsync("/admin/api/tips");
-        var noHeader = await app.AdminClient(session, header: false).PostAsync("/admin/api/tips", AdminRequests.Json(new { }));
-        var list = await app.AdminClient(session).GetAsync("/admin/api/tips");
+        var responses = new[]
+        {
+            await app.AdminClient().GetAsync("/admin/login"),
+            await app.AdminClient().GetAsync("/admin"),
+            await app.AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", "wrong"))),
+            await app.AdminClient(session, origin: null).PostAsync("/admin", AdminRequests.Form()),
+            await signedIn.GetAsync("/admin"),
+            await signedIn.GetAsync("/admin/entries"),
+            await signedIn.GetAsync("/admin/zzz"),
+            await signedIn.PostAsync("/admin/logout", AdminRequests.Form()),
+        };
 
-        Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, noHeader.StatusCode);
-        Assert.Equal(HttpStatusCode.OK, list.StatusCode);
-        foreach (var response in new[] { unauthorized, noHeader, list })
+        Assert.Equal(
+            new[] { 200, 302, 401, 403, 200, 200, 404, 302 },
+            responses.Select(response => (int)response.StatusCode).ToArray());
+        foreach (var response in responses)
         {
             Assert.Equal("no-store", string.Join(",", response.Headers.GetValues("Cache-Control")));
+            var policy = string.Join(";", response.Headers.GetValues("Content-Security-Policy"));
+            Assert.Contains("default-src 'self'", policy);
+            Assert.Contains("frame-ancestors 'none'", policy);
+            Assert.Contains("form-action 'self'", policy);
+        }
+    }
+
+    // The policy blocks inline script and style, so the pages must not contain any: it keeps the policy honest.
+    [Fact]
+    public async Task The_rendered_pages_contain_no_script_no_event_attribute_and_no_style_attribute()
+    {
+        await using var app = await TestApp.StartAdminAsync(_db);
+        var session = await app.LoginAsync();
+        var signedIn = app.AdminClient(session);
+        await signedIn.PostAsync("/admin", AdminRequests.Form(("text", "a tip"), ("status", "published")));
+
+        var pages = new[]
+        {
+            await AdminRequests.BodyAsync(await app.AdminClient().GetAsync("/admin/login")),
+            await AdminRequests.BodyAsync(await signedIn.GetAsync("/admin")),
+            await AdminRequests.BodyAsync(await signedIn.GetAsync("/admin/entries")),
+        };
+
+        foreach (var html in pages)
+        {
+            Assert.DoesNotContain("<script", html, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotMatch(@"\son\w+\s*=", html);
+            Assert.DoesNotMatch(@"\sstyle\s*=", html);
+            Assert.DoesNotContain("<style", html, StringComparison.OrdinalIgnoreCase);
+        }
+        Assert.Contains("a tip", pages[1]);
+    }
+
+    [Fact]
+    public async Task The_stylesheet_is_served_and_the_old_script_the_old_page_and_the_old_api_are_gone()
+    {
+        await using var app = await TestApp.StartAdminAsync(_db);
+        var session = await app.LoginAsync();
+        var client = app.AdminClient(session);
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/admin/admin.css")).StatusCode);
+        foreach (var path in new[] { "/admin/admin.js", "/admin/index.html", "/admin/api/tips" })
+        {
+            Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(path)).StatusCode);
         }
     }
 }

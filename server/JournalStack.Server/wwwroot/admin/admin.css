@@ -15,6 +15,16 @@ header {
     justify-content: space-between;
 }
 
+nav {
+    align-items: center;
+    display: flex;
+    gap: 1rem;
+}
+
+form.inline {
+    display: inline;
+}
+
 table {
     border-collapse: collapse;
     width: 100%;
@@ -29,7 +39,7 @@ td {
 }
 
 /* Entry text is shown in full, with its line breaks. */
-td.text {
+.text {
     overflow-wrap: anywhere;
     white-space: pre-wrap;
 }

@@ -1,0 +1,49 @@
+@page
+@model JournalStack.Server.Pages.IndexModel
+@{
+    Layout = "_Layout";
+    ViewData["Title"] = "Tips";
+    var invariant = System.Globalization.CultureInfo.InvariantCulture;
+}
+
+@if (Model.Message is not null)
+{
+    <p class="message">@Model.Message</p>
+}
+
+<h2>Tips</h2>
+<p>The app shows the published tip that was saved last.</p>
+<table>
+    <thead>
+        <tr><th>Status</th><th>Text</th><th>Saved</th><th></th></tr>
+    </thead>
+    <tbody>
+        @foreach (var tip in Model.Tips)
+        {
+            <tr>
+                <td>@tip.Status</td>
+                <td>
+                    <div class="text">@tip.Text</div>
+                    @if (tip.Id == Model.ShownInApp)
+                    {
+                        <div class="marker">Shown in the app</div>
+                    }
+                </td>
+                <td>@tip.UpdatedAt.ToString("yyyy-MM-dd HH:mm:ss", invariant) UTC</td>
+                <td><a href="/admin?edit=@tip.Id">Edit</a></td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+<h3>@(Model.EditId.Length == 0 ? "New tip" : "Edit tip")</h3>
+<form method="post" action="/admin">
+    <input type="hidden" name="id" value="@Model.EditId">
+    <textarea name="text" rows="4" maxlength="2000">@Model.EditText</textarea>
+    <select name="status">
+        <option value="draft" selected="@(Model.EditStatus == "draft")">draft</option>
+        <option value="published" selected="@(Model.EditStatus == "published")">published</option>
+    </select>
+    <button type="submit">Save</button>
+    <a href="/admin">New</a>
+</form>

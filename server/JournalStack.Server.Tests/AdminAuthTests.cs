@@ -21,9 +21,9 @@ public class AdminAuthTests
         return new HttpRequestMessage(method, path) { Content = content };
     }
 
-    private static string Route(string route)
+    private static HttpContent TipContent(string text = "a tip", string status = "draft")
     {
-        return route.Replace("{id:guid}", Guid.NewGuid().ToString());
+        return AdminRequests.Form(("text", text), ("status", status));
     }
 
     [Fact]
@@ -31,9 +31,10 @@ public class AdminAuthTests
     {
         await using var app = await TestApp.StartAdminAsync(_db);
 
-        var response = await app.AdminClient().PostAsync("/admin/api/login", AdminRequests.Json(new { password = TestApp.AdminTestPassword }));
+        var response = await app.AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", TestApp.AdminTestPassword)));
 
-        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal("/admin", response.Headers.Location!.OriginalString);
         var cookie = AdminRequests.SetCookie(response)!.ToLowerInvariant();
         Assert.Contains("httponly", cookie);
         Assert.Contains("samesite=strict", cookie);
@@ -49,7 +50,6 @@ public class AdminAuthTests
         Assert.Equal(Admin.SessionHash(token, TestApp.AdminTestHash), stored);
         Assert.DoesNotContain(token, Convert.ToBase64String(stored));
         Assert.DoesNotContain(token, Convert.ToHexString(stored), StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("", await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -57,8 +57,8 @@ public class AdminAuthTests
     {
         await using var app = await TestApp.StartAdminAsync(_db);
 
-        var plain = await app.AdminClient().PostAsync("/admin/api/login", AdminRequests.Json(new { password = TestApp.AdminTestPassword }));
-        var request = Request(HttpMethod.Post, "/admin/api/login", AdminRequests.Json(new { password = TestApp.AdminTestPassword }));
+        var plain = await app.AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", TestApp.AdminTestPassword)));
+        var request = Request(HttpMethod.Post, "/admin/login", AdminRequests.Form(("password", TestApp.AdminTestPassword)));
         request.Headers.Add("X-Forwarded-Proto", "https");
         var proxied = await app.AdminClient().SendAsync(request);
 
@@ -66,35 +66,48 @@ public class AdminAuthTests
         Assert.Contains("secure", AdminRequests.SetCookie(proxied)!, StringComparison.OrdinalIgnoreCase);
     }
 
-    public static TheoryData<string, int, string> BadLogins()
-    {
-        return new TheoryData<string, int, string>
-        {
-            { "{\"password\":\"" + PasswordMarker + "\"}", 401, "invalid_credentials" },
-            { "{}", 401, "invalid_credentials" },
-            { "{\"password\":5}", 401, "invalid_credentials" },
-            { "", 400, "invalid_json" },
-            { "{{{", 400, "invalid_json" },
-            { "[]", 400, "invalid_json" },
-            { "{\"password\":\"" + new string('x', 1100) + "\"}", 413, "payload_too_large" },
-        };
-    }
-
+    // kind: wrong password, no password field, no body and no content type, a JSON body.
     // Each row starts its own app, so every row has the full five attempts and the clock does not need to move.
     [Theory]
-    [MemberData(nameof(BadLogins))]
-    public async Task A_bad_login_is_refused_with_its_own_code_and_leaves_no_cookie_no_session_and_no_trace(string body, int status, string code)
+    [InlineData("wrong")]
+    [InlineData("missing")]
+    [InlineData("empty")]
+    [InlineData("json")]
+    public async Task A_bad_login_is_a_401_with_a_message_and_leaves_no_cookie_no_session_and_no_trace(string kind)
+    {
+        await using var app = await TestApp.StartAdminAsync(_db);
+        HttpContent? content = kind switch
+        {
+            "wrong" => AdminRequests.Form(("password", PasswordMarker)),
+            "missing" => AdminRequests.Form(("other", PasswordMarker)),
+            "json" => AdminRequests.Json(new { password = PasswordMarker }),
+            _ => null,
+        };
+
+        var response = await app.AdminClient().PostAsync("/admin/login", content);
+        var body = await AdminRequests.BodyAsync(response);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Contains("The password is not right.", body);
+        Assert.Null(AdminRequests.SetCookie(response));
+        Assert.Equal(0, await app.CountAsync("admin_sessions"));
+        Assert.DoesNotContain(PasswordMarker, body);
+        Assert.DoesNotContain(PasswordMarker, app.Logs.All);
+    }
+
+    [Fact]
+    public async Task A_form_value_over_16_KiB_is_refused_and_leaves_no_cookie_no_session_and_no_trace()
     {
         await using var app = await TestApp.StartAdminAsync(_db);
 
-        var response = await app.AdminClient().PostAsync("/admin/api/login", new StringContent(body, Encoding.UTF8, "application/json"));
-        var text = await response.Content.ReadAsStringAsync();
+        var response = await app.AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", PasswordMarker + new string('x', 17 * 1024))));
+        var body = await AdminRequests.BodyAsync(response);
 
-        Assert.Equal((HttpStatusCode)status, response.StatusCode);
-        Assert.Equal(code, await AdminRequests.CodeAsync(response));
+        // A 401 would mean the page read the value, so the form limit did not refuse it. The exact 500 pins that it did.
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
         Assert.Null(AdminRequests.SetCookie(response));
         Assert.Equal(0, await app.CountAsync("admin_sessions"));
-        Assert.DoesNotContain(PasswordMarker, text);
+        Assert.DoesNotContain(PasswordMarker, body);
         Assert.DoesNotContain(PasswordMarker, app.Logs.All);
     }
 
@@ -106,18 +119,34 @@ public class AdminAuthTests
 
         for (var attempt = 0; attempt < 5; attempt++)
         {
-            var wrong = await client.PostAsync("/admin/api/login", AdminRequests.Json(new { password = PasswordMarker }));
-            Assert.Equal("invalid_credentials", await AdminRequests.CodeAsync(wrong));
+            var wrong = await client.PostAsync("/admin/login", AdminRequests.Form(("password", PasswordMarker)));
+            Assert.Equal(HttpStatusCode.Unauthorized, wrong.StatusCode);
         }
-        var locked = await client.PostAsync("/admin/api/login", AdminRequests.Json(new { password = TestApp.AdminTestPassword }));
+        var locked = await client.PostAsync("/admin/login", AdminRequests.Form(("password", TestApp.AdminTestPassword)));
 
         Assert.Equal(HttpStatusCode.TooManyRequests, locked.StatusCode);
-        Assert.Equal("login_locked", await AdminRequests.CodeAsync(locked));
+        Assert.Contains("Too many login attempts", await AdminRequests.BodyAsync(locked));
         Assert.Null(AdminRequests.SetCookie(locked));
 
         app.Clock.Now = app.Clock.Now.AddSeconds(61);
-        var open = await client.PostAsync("/admin/api/login", AdminRequests.Json(new { password = TestApp.AdminTestPassword }));
-        Assert.Equal(HttpStatusCode.NoContent, open.StatusCode);
+        var open = await client.PostAsync("/admin/login", AdminRequests.Form(("password", TestApp.AdminTestPassword)));
+        Assert.Equal(HttpStatusCode.Redirect, open.StatusCode);
+    }
+
+    // The only observable proof that the lockout runs before the form is read: reading it would throw a 500.
+    [Fact]
+    public async Task The_lockout_answers_before_the_form_is_read_so_a_huge_sixth_attempt_is_a_429_and_not_a_500()
+    {
+        await using var app = await TestApp.StartAdminAsync(_db);
+        var client = app.AdminClient();
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            await client.PostAsync("/admin/login", AdminRequests.Form(("password", PasswordMarker)));
+        }
+
+        var locked = await client.PostAsync("/admin/login", AdminRequests.Form(("password", new string('x', 17 * 1024))));
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, locked.StatusCode);
     }
 
     [Fact]
@@ -128,9 +157,9 @@ public class AdminAuthTests
 
         for (var attempt = 0; attempt < 6; attempt++)
         {
-            var response = await client.PostAsync("/admin/api/login", AdminRequests.Json(new { password = TestApp.AdminTestPassword }));
+            var response = await client.PostAsync("/admin/login", AdminRequests.Form(("password", TestApp.AdminTestPassword)));
             Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-            Assert.Equal("admin_not_configured", await AdminRequests.CodeAsync(response));
+            Assert.Contains("Admin login is not set up", await AdminRequests.BodyAsync(response));
         }
         Assert.Equal(0, await app.CountAsync("admin_sessions"));
     }
@@ -140,7 +169,7 @@ public class AdminAuthTests
     {
         await using var app = await TestApp.StartAdminAsync(_db, hash: "garbage");
 
-        var response = await app.AdminClient().PostAsync("/admin/api/login", AdminRequests.Json(new { password = TestApp.AdminTestPassword }));
+        var response = await app.AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", TestApp.AdminTestPassword)));
 
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
         Assert.Equal("server_error", await AdminRequests.CodeAsync(response));
@@ -148,61 +177,99 @@ public class AdminAuthTests
         Assert.Equal(0, await app.CountAsync("admin_sessions"));
     }
 
-    [Fact]
-    public async Task Every_write_route_needs_the_header_and_a_json_body_and_the_set_of_write_routes_is_pinned()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("http://evil.example")]
+    [InlineData("null")]
+    [InlineData("http://localhost:81")]
+    public async Task Every_admin_post_needs_an_origin_that_is_this_site_and_a_refused_post_changes_nothing(string? origin)
     {
         await using var app = await TestApp.StartAdminAsync(_db);
         var session = await app.LoginAsync();
-        var sessions = await app.CountAsync("admin_sessions");
-
-        var writes = app.AdminRoutes().Where(route => !route.StartsWith("GET ", StringComparison.Ordinal)).Order().ToList();
-
-        Assert.Equal(
-            new[] { "POST /admin/api/login", "POST /admin/api/logout", "POST /admin/api/tips", "PUT /admin/api/tips/{id:guid}" },
-            writes);
-        foreach (var route in writes)
+        var posts = new (string Path, Func<HttpContent> Body)[]
         {
-            var parts = route.Split(' ');
-            var method = new HttpMethod(parts[0]);
+            ("/admin", () => TipContent("ORIGINMARKER")),
+            ("/admin/login", () => AdminRequests.Form(("password", TestApp.AdminTestPassword))),
+            ("/admin/logout", () => AdminRequests.Form()),
+            ("/admin/zzz", () => AdminRequests.Form()),
+        };
 
-            var noHeader = await app.AdminClient(session, header: false).SendAsync(Request(method, Route(parts[1]), AdminRequests.Json(new { })));
-            Assert.Equal(HttpStatusCode.Forbidden, noHeader.StatusCode);
-            Assert.Equal("csrf_header", await AdminRequests.CodeAsync(noHeader));
+        foreach (var (path, body) in posts)
+        {
+            foreach (var cookie in new string?[] { session, null })
+            {
+                var response = await app.AdminClient(cookie, origin).PostAsync(path, body());
 
-            var wrongRequest = Request(method, Route(parts[1]), AdminRequests.Json(new { }));
-            wrongRequest.Headers.Add("X-Requested-With", "other");
-            var wrongHeader = await app.AdminClient(session, header: false).SendAsync(wrongRequest);
-            Assert.Equal("csrf_header", await AdminRequests.CodeAsync(wrongHeader));
-
-            var plain = await app.AdminClient(session).SendAsync(Request(method, Route(parts[1]), new StringContent("{}", Encoding.UTF8, "text/plain")));
-            Assert.Equal(HttpStatusCode.UnsupportedMediaType, plain.StatusCode);
-            Assert.Equal("unsupported_media_type", await AdminRequests.CodeAsync(plain));
+                Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+                Assert.Equal("csrf_origin", await AdminRequests.CodeAsync(response));
+                Assert.Null(AdminRequests.SetCookie(response));
+            }
         }
         Assert.Equal(0, await app.CountAsync("tips"));
-        Assert.Equal(sessions, await app.CountAsync("admin_sessions"));
+        Assert.Equal(1, await app.CountAsync("admin_sessions"));
+        Assert.Equal(HttpStatusCode.OK, (await app.AdminClient(session).GetAsync("/admin")).StatusCode);
     }
 
     [Fact]
-    public async Task Every_route_except_login_and_logout_needs_a_session()
+    public async Task A_post_with_this_sites_origin_and_no_token_is_accepted()
     {
         await using var app = await TestApp.StartAdminAsync(_db);
-        var protectedRoutes = app.AdminRoutes()
-            .Where(route => !route.EndsWith("/login", StringComparison.Ordinal) && !route.EndsWith("/logout", StringComparison.Ordinal))
-            .ToList();
+        var session = await app.LoginAsync();
 
-        Assert.NotEmpty(protectedRoutes);
-        foreach (var route in protectedRoutes)
+        var response = await app.AdminClient(session, "http://LOCALHOST").PostAsync("/admin", TipContent("accepted"));
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal(1, await app.CountAsync("tips"));
+    }
+
+    [Fact]
+    public async Task A_get_never_writes_anything()
+    {
+        await using var app = await TestApp.StartAdminAsync(_db);
+        var session = await app.LoginAsync();
+        await app.AdminClient(session).PostAsync("/admin", TipContent("existing"));
+        await using var conn = await PostgresFixture.OpenAsync(app.Settings);
+        var id = await conn.ExecuteScalarAsync<Guid>("SELECT id FROM tips");
+
+        foreach (var path in new[] { "/admin", $"/admin?edit={id}", $"/admin?edit={Guid.NewGuid()}", "/admin?edit=abc", "/admin/entries", "/admin/login" })
         {
-            var parts = route.Split(' ');
+            var response = await app.AdminClient(session).GetAsync(path);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        Assert.Equal(1, await app.CountAsync("tips"));
+        Assert.Equal(1, await app.CountAsync("admin_sessions"));
+    }
+
+    [Fact]
+    public async Task Every_path_under_admin_except_login_and_logout_needs_a_session_and_near_misses_do_not_slip_through()
+    {
+        await using var app = await TestApp.StartAdminAsync(_db);
+        await app.LoginAsync();
+        var requests = new (HttpMethod Method, string Path)[]
+        {
+            (HttpMethod.Get, "/admin"),
+            (HttpMethod.Get, "/admin/entries"),
+            (HttpMethod.Post, "/admin"),
+            (HttpMethod.Get, "/admin/zzz"),
+            (HttpMethod.Post, "/admin/zzz"),
+            (HttpMethod.Get, "/admin/loginx"),
+            (HttpMethod.Get, "/admin/login/x"),
+            (HttpMethod.Post, "/admin/logout2"),
+        };
+
+        foreach (var (method, path) in requests)
+        {
             foreach (var junk in new string?[] { null, new string('a', Tokens.Length), new string('b', 4000) })
             {
-                var content = parts[0] == "GET" ? null : AdminRequests.Json(new { });
-                var response = await app.AdminClient(junk).SendAsync(Request(new HttpMethod(parts[0]), Route(parts[1]), content));
+                var content = method == HttpMethod.Post ? TipContent() : null;
+                var response = await app.AdminClient(junk).SendAsync(Request(method, path, content));
 
-                Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-                Assert.Equal("unauthorized", await AdminRequests.CodeAsync(response));
+                Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+                Assert.Equal("/admin/login", response.Headers.Location!.OriginalString);
             }
         }
+        Assert.Equal(0, await app.CountAsync("tips"));
     }
 
     [Fact]
@@ -213,12 +280,12 @@ public class AdminAuthTests
         var start = app.Clock.Now;
 
         app.Clock.Now = start.AddHours(8).AddSeconds(-1);
-        Assert.Equal(HttpStatusCode.OK, (await app.AdminClient(session).GetAsync("/admin/api/tips")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await app.AdminClient(session).GetAsync("/admin")).StatusCode);
 
         app.Clock.Now = start.AddHours(8);
-        var expired = await app.AdminClient(session).GetAsync("/admin/api/tips");
-        Assert.Equal(HttpStatusCode.Unauthorized, expired.StatusCode);
-        Assert.Equal("unauthorized", await AdminRequests.CodeAsync(expired));
+        var expired = await app.AdminClient(session).GetAsync("/admin");
+        Assert.Equal(HttpStatusCode.Redirect, expired.StatusCode);
+        Assert.Equal("/admin/login", expired.Headers.Location!.OriginalString);
     }
 
     [Fact]
@@ -227,15 +294,16 @@ public class AdminAuthTests
         await using var app = await TestApp.StartAdminAsync(_db);
         var session = await app.LoginAsync();
 
-        var logout = await app.AdminClient(session).PostAsync("/admin/api/logout", AdminRequests.Json(new { }));
+        var logout = await app.AdminClient(session).PostAsync("/admin/logout", AdminRequests.Form());
 
-        Assert.Equal(HttpStatusCode.NoContent, logout.StatusCode);
+        Assert.Equal(HttpStatusCode.Redirect, logout.StatusCode);
+        Assert.Equal("/admin/login", logout.Headers.Location!.OriginalString);
         Assert.Contains($"{Admin.CookieName}=;", AdminRequests.SetCookie(logout)!);
         Assert.Equal(0, await app.CountAsync("admin_sessions"));
-        var replay = await app.AdminClient(session).GetAsync("/admin/api/tips");
-        Assert.Equal(HttpStatusCode.Unauthorized, replay.StatusCode);
-        var again = await app.AdminClient().PostAsync("/admin/api/logout", AdminRequests.Json(new { }));
-        Assert.Equal(HttpStatusCode.NoContent, again.StatusCode);
+        var replay = await app.AdminClient(session).GetAsync("/admin");
+        Assert.Equal(HttpStatusCode.Redirect, replay.StatusCode);
+        var again = await app.AdminClient().PostAsync("/admin/logout", AdminRequests.Form());
+        Assert.Equal(HttpStatusCode.Redirect, again.StatusCode);
     }
 
     [Fact]
@@ -246,12 +314,12 @@ public class AdminAuthTests
         await using var conn = await PostgresFixture.OpenAsync(app.Settings);
         await conn.ExecuteAsync("ALTER TABLE admin_sessions RENAME TO admin_sessions_gone");
 
-        var logout = await app.AdminClient(session).PostAsync("/admin/api/logout", AdminRequests.Json(new { }));
+        var logout = await app.AdminClient(session).PostAsync("/admin/logout", AdminRequests.Form());
 
         Assert.True((int)logout.StatusCode is 500 or 503);
         Assert.Null(AdminRequests.SetCookie(logout));
         await conn.ExecuteAsync("ALTER TABLE admin_sessions_gone RENAME TO admin_sessions");
-        Assert.Equal(HttpStatusCode.OK, (await app.AdminClient(session).GetAsync("/admin/api/tips")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await app.AdminClient(session).GetAsync("/admin")).StatusCode);
     }
 
     [Fact]
@@ -261,7 +329,7 @@ public class AdminAuthTests
         var session = await app.LoginAsync();
         await using var second = new TestApp(app.Settings);
 
-        var response = await second.AdminClient(session).GetAsync("/admin/api/tips");
+        var response = await second.AdminClient(session).GetAsync("/admin");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -275,23 +343,23 @@ public class AdminAuthTests
         var settings = new Dictionary<string, string?>(app.Settings) { ["ADMIN_PASSWORD_HASH"] = Admin.HashPassword(newPassword) };
         await using var rotated = new TestApp(settings);
 
-        var old = await rotated.AdminClient(session).GetAsync("/admin/api/tips");
-        Assert.Equal(HttpStatusCode.Unauthorized, old.StatusCode);
+        var old = await rotated.AdminClient(session).GetAsync("/admin");
+        Assert.Equal(HttpStatusCode.Redirect, old.StatusCode);
 
         var fresh = await rotated.LoginAsync(newPassword);
-        Assert.Equal(HttpStatusCode.OK, (await rotated.AdminClient(fresh).GetAsync("/admin/api/tips")).StatusCode);
-        var oldPassword = await rotated.AdminClient().PostAsync("/admin/api/login", AdminRequests.Json(new { password = TestApp.AdminTestPassword }));
-        Assert.Equal("invalid_credentials", await AdminRequests.CodeAsync(oldPassword));
+        Assert.Equal(HttpStatusCode.OK, (await rotated.AdminClient(fresh).GetAsync("/admin")).StatusCode);
+        var oldPassword = await rotated.AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", TestApp.AdminTestPassword)));
+        Assert.Equal(HttpStatusCode.Unauthorized, oldPassword.StatusCode);
     }
 
     [Fact]
-    public async Task When_the_session_insert_fails_login_is_never_2xx_and_sends_no_cookie_at_all()
+    public async Task When_the_session_insert_fails_login_is_never_a_redirect_and_sends_no_cookie_at_all()
     {
         await using var app = await TestApp.StartAdminAsync(_db);
         await using var conn = await PostgresFixture.OpenAsync(app.Settings);
         await conn.ExecuteAsync("ALTER TABLE admin_sessions RENAME TO admin_sessions_gone");
 
-        var response = await app.AdminClient().PostAsync("/admin/api/login", AdminRequests.Json(new { password = TestApp.AdminTestPassword }));
+        var response = await app.AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", TestApp.AdminTestPassword)));
 
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
         Assert.Equal("server_error", await AdminRequests.CodeAsync(response));
@@ -302,14 +370,13 @@ public class AdminAuthTests
     public async Task A_preflight_from_another_site_gets_no_cross_site_permission()
     {
         await using var app = await TestApp.StartAdminAsync(_db);
-        var request = Request(HttpMethod.Options, "/admin/api/tips");
+        var request = Request(HttpMethod.Options, "/admin/login");
         request.Headers.Add("Origin", "http://evil.example");
         request.Headers.Add("Access-Control-Request-Method", "POST");
-        request.Headers.Add("Access-Control-Request-Headers", "x-requested-with,content-type");
+        request.Headers.Add("Access-Control-Request-Headers", "content-type");
 
-        var response = await app.AdminClient().SendAsync(request);
+        var response = await app.AdminClient(origin: null).SendAsync(request);
 
-        Assert.False(response.IsSuccessStatusCode);
         Assert.DoesNotContain(response.Headers, header => header.Key.StartsWith("Access-Control-Allow-", StringComparison.OrdinalIgnoreCase));
     }
 
@@ -318,15 +385,36 @@ public class AdminAuthTests
     {
         await using var app = await TestApp.StartAdminAsync(_db);
 
-        await app.AdminClient().PostAsync("/admin/api/login", AdminRequests.Json(new { password = PasswordMarker }));
+        await app.AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", PasswordMarker)));
         var session = await app.LoginAsync();
-        await app.AdminClient(session).PostAsync("/admin/api/tips", AdminRequests.Json(new { text = "a tip", status = "draft" }));
-        await app.AdminClient(session).PostAsync("/admin/api/logout", AdminRequests.Json(new { }));
+        await app.AdminClient(session).PostAsync("/admin", TipContent());
+        await app.AdminClient(session).PostAsync("/admin/logout", AdminRequests.Form());
 
         var logs = app.Logs.All;
         Assert.DoesNotContain(PasswordMarker, logs);
         Assert.DoesNotContain(TestApp.AdminTestPassword, logs);
         Assert.DoesNotContain(session, logs);
         Assert.DoesNotContain(TestApp.AdminTestHash, logs);
+    }
+
+    // No request may depend on a key ring, so the only cookie the server ever sets is the admin one.
+    [Fact]
+    public async Task The_only_cookie_the_server_ever_sets_is_the_admin_session_cookie()
+    {
+        await using var app = await TestApp.StartAdminAsync(_db);
+        var responses = new List<HttpResponseMessage>();
+
+        responses.Add(await app.AdminClient().GetAsync("/admin/login"));
+        responses.Add(await app.AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", TestApp.AdminTestPassword))));
+        var session = AdminRequests.CookieValue(responses[1])!;
+        var client = app.AdminClient(session);
+        responses.Add(await client.GetAsync("/admin"));
+        responses.Add(await client.PostAsync("/admin", TipContent()));
+        responses.Add(await client.GetAsync("/admin/entries"));
+        responses.Add(await client.PostAsync("/admin/logout", AdminRequests.Form()));
+
+        var cookies = responses.SelectMany(AdminRequests.AllSetCookies).ToList();
+        Assert.NotEmpty(cookies);
+        Assert.All(cookies, cookie => Assert.StartsWith(Admin.CookieName + "=", cookie));
     }
 }

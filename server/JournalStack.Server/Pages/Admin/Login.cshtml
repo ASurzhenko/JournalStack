@@ -1,0 +1,26 @@
+@page
+@model JournalStack.Server.Pages.LoginModel
+@{
+    Layout = null;
+}
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign in - JournalStack admin</title>
+    <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+    <h1>JournalStack admin</h1>
+    @if (Model.Message is not null)
+    {
+        <p class="message">@Model.Message</p>
+    }
+    <form method="post" action="/admin/login">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password">
+        <button type="submit">Sign in</button>
+    </form>
+</body>
+</html>

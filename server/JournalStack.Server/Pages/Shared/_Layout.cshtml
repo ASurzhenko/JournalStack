@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>@ViewData["Title"] - JournalStack admin</title>
+    <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+    <header>
+        <h1>JournalStack admin</h1>
+        <nav>
+            <a href="/admin">Tips</a>
+            <a href="/admin/entries">Entries</a>
+            <form method="post" action="/admin/logout" class="inline">
+                <button type="submit">Sign out</button>
+            </form>
+        </nav>
+    </header>
+
+    @RenderBody()
+</body>
+</html>

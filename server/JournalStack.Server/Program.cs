@@ -1,5 +1,7 @@
 using JournalStack.Server;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 
 // `migrate` applies pending database scripts and exits. Railway and compose run it before the server starts.
@@ -19,6 +21,12 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(sp => NpgsqlDataSource.Create(Database.ConnectionString(sp.GetRequiredService<IConfiguration>())));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Limits>();
+
+// The built-in antiforgery token would die with the key ring on every deploy. Admin POSTs are guarded by the Origin check in Admin.Map.
+builder.Services.AddRazorPages(options => options.Conventions.ConfigureFilter(new IgnoreAntiforgeryTokenAttribute()));
+
+// A form value over the entry body limit is refused. The limit is the same one the entry text uses.
+builder.Services.Configure<FormOptions>(options => options.ValueLengthLimit = Entries.BodyLimit);
 
 var app = builder.Build();
 
@@ -62,10 +70,9 @@ app.Use(async (context, next) =>
     }
 });
 
-app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
 {
-    // The admin pages load only their own files, and may not be framed. They are re-checked on every visit.
+    // The admin stylesheet is the only static file. It may not be framed and is re-checked on every visit.
     OnPrepareResponse = context =>
     {
         context.Context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; frame-ancestors 'none'";

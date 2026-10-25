@@ -1,0 +1,26 @@
+@page
+@model JournalStack.Server.Pages.EntriesModel
+@{
+    Layout = "_Layout";
+    ViewData["Title"] = "Entries";
+    var invariant = System.Globalization.CultureInfo.InvariantCulture;
+}
+
+<h2>Entries</h2>
+<p>The newest 50 entries from all phones. Read only.</p>
+<table>
+    <thead>
+        <tr><th>Received</th><th>Device</th><th>Sent by the phone</th><th>Text</th></tr>
+    </thead>
+    <tbody>
+        @foreach (var entry in Model.Entries)
+        {
+            <tr>
+                <td>@entry.ReceivedAt.ToString("yyyy-MM-dd HH:mm:ss", invariant) UTC</td>
+                <td>@entry.DeviceId.ToString().Substring(0, 8)</td>
+                <td>@entry.ClientCreatedAt.ToString("yyyy-MM-dd HH:mm:ss", invariant) UTC</td>
+                <td class="text">@entry.Text</td>
+            </tr>
+        }
+    </tbody>
+</table>
