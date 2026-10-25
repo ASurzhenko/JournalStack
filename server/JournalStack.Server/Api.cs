@@ -53,6 +53,7 @@ public static class Api
         });
 
         Entries.Map(device);
+        Admin.Map(app);
     }
 
     private static async ValueTask<object?> RequireDevice(EndpointFilterInvocationContext context, EndpointFilterDelegate next)

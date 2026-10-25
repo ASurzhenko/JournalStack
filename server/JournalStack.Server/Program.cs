@@ -9,6 +9,12 @@ if (args.Length > 0 && args[0] == "migrate")
     return Migrator.Run(Database.ConnectionString(migrateConfig));
 }
 
+// `hash-password` reads one line from the console and prints the hash for ADMIN_PASSWORD_HASH. It needs no database.
+if (args.Length > 0 && args[0] == "hash-password")
+{
+    return Admin.RunHashPassword();
+}
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(sp => NpgsqlDataSource.Create(Database.ConnectionString(sp.GetRequiredService<IConfiguration>())));
 builder.Services.AddSingleton(TimeProvider.System);
@@ -18,6 +24,12 @@ var app = builder.Build();
 
 // Stop at startup, not at the first request, when a PG variable is missing.
 app.Services.GetRequiredService<NpgsqlDataSource>();
+
+// The server still starts without a hash, so the device API works. Only admin login is off.
+if (string.IsNullOrEmpty(app.Configuration["ADMIN_PASSWORD_HASH"]))
+{
+    app.Logger.LogWarning("ADMIN_PASSWORD_HASH is not set. Admin login is disabled.");
+}
 
 // Railway ends TLS in front of the server. Only the scheme is read from the proxy, never the client address.
 var forwarded = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedProto };
@@ -48,6 +60,17 @@ app.Use(async (context, next) =>
             : Problems.Create(500, "server_error", "Something went wrong on the server.", requestId);
         await result.ExecuteAsync(context);
     }
+});
+
+app.UseDefaultFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    // The admin pages load only their own files, and may not be framed. They are re-checked on every visit.
+    OnPrepareResponse = context =>
+    {
+        context.Context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; frame-ancestors 'none'";
+        context.Context.Response.Headers.CacheControl = "no-cache";
+    },
 });
 
 Api.Map(app);
