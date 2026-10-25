@@ -252,13 +252,16 @@ public sealed class TestApp : WebApplicationFactory<Program>
         return new TestApp(settings);
     }
 
+    public const string TestOrigin = "http://localhost";
+
     // The client keeps no cookies and follows no redirects, so a test sees exactly what the server sent.
-    public HttpClient AdminClient(string? session = null, bool header = true)
+    // TestServer takes the Host from the request address, so the default Origin is the server's own. null sends none.
+    public HttpClient AdminClient(string? session = null, string? origin = TestOrigin)
     {
         var client = CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false, AllowAutoRedirect = false });
-        if (header)
+        if (origin is not null)
         {
-            client.DefaultRequestHeaders.Add("X-Requested-With", Admin.RequestedWith);
+            client.DefaultRequestHeaders.Add("Origin", origin);
         }
         if (session is not null)
         {
@@ -269,21 +272,9 @@ public sealed class TestApp : WebApplicationFactory<Program>
 
     public async Task<string> LoginAsync(string password = AdminTestPassword)
     {
-        var response = await AdminClient().PostAsync("/admin/api/login", AdminRequests.Json(new { password }));
-        Assert.Equal(System.Net.HttpStatusCode.NoContent, response.StatusCode);
+        var response = await AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", password)));
+        Assert.Equal(System.Net.HttpStatusCode.Redirect, response.StatusCode);
         return AdminRequests.CookieValue(response)!;
-    }
-
-    // The endpoints the running host serves under /admin/api, as "VERB path". Read after the host has started.
-    public List<string> AdminRoutes()
-    {
-        _ = Server;
-        return Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>().Endpoints
-            .OfType<Microsoft.AspNetCore.Routing.RouteEndpoint>()
-            .Where(endpoint => endpoint.RoutePattern.RawText!.StartsWith("/admin/api", StringComparison.Ordinal))
-            .SelectMany(endpoint => endpoint.Metadata.GetRequiredMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>().HttpMethods
-                .Select(method => $"{method} {endpoint.RoutePattern.RawText}"))
-            .ToList();
     }
 
     public async Task<int> CountAsync(string table)
@@ -298,6 +289,27 @@ public static class AdminRequests
     public static StringContent Json(object value)
     {
         return new StringContent(System.Text.Json.JsonSerializer.Serialize(value), System.Text.Encoding.UTF8, "application/json");
+    }
+
+    public static FormUrlEncodedContent Form(params (string Name, string Value)[] fields)
+    {
+        return new FormUrlEncodedContent(fields.Select(field => new KeyValuePair<string, string>(field.Name, field.Value)));
+    }
+
+    // A page is read as it was sent. Text that was meant to be shown literally must appear encoded here.
+    public static async Task<string> BodyAsync(HttpResponseMessage response)
+    {
+        return await response.Content.ReadAsStringAsync();
+    }
+
+    public static async Task<string> DecodedAsync(HttpResponseMessage response)
+    {
+        return System.Net.WebUtility.HtmlDecode(await BodyAsync(response));
+    }
+
+    public static IEnumerable<string> AllSetCookies(HttpResponseMessage response)
+    {
+        return response.Headers.TryGetValues("Set-Cookie", out var values) ? values : Enumerable.Empty<string>();
     }
 
     // The value of the admin cookie in a Set-Cookie header, or null when the response sets none.
