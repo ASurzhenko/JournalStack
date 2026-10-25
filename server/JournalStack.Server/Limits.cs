@@ -45,10 +45,14 @@ public sealed class Limits
     // One cap per device on entry posts. Retries and refused requests count too.
     public RateLimiter EntryPosts { get; }
 
+    // One shared counter for admin login attempts. Successful attempts count too.
+    public RateLimiter AdminLogins { get; }
+
     public Limits(TimeProvider clock)
     {
         Registrations = new RateLimiter(30, TimeSpan.FromMinutes(1), clock);
         DeviceRequests = new RateLimiter(600, TimeSpan.FromHours(1), clock);
         EntryPosts = new RateLimiter(60, TimeSpan.FromHours(1), clock);
+        AdminLogins = new RateLimiter(5, TimeSpan.FromMinutes(1), clock);
     }
 }

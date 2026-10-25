@@ -1,0 +1,53 @@
+body {
+    font-family: system-ui, sans-serif;
+    margin: 0 auto;
+    max-width: 60rem;
+    padding: 1rem;
+}
+
+[hidden] {
+    display: none;
+}
+
+header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+th,
+td {
+    border-bottom: 1px solid #ccc;
+    padding: 0.4rem;
+    text-align: left;
+    vertical-align: top;
+}
+
+/* Entry text is shown in full, with its line breaks. */
+td.text {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+textarea {
+    box-sizing: border-box;
+    display: block;
+    margin-bottom: 0.5rem;
+    width: 100%;
+}
+
+.message {
+    background: #fff3cd;
+    border: 1px solid #e0c36a;
+    padding: 0.5rem;
+}
+
+.marker {
+    color: #0a6b2d;
+    font-weight: bold;
+}

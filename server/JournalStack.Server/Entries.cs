@@ -188,7 +188,7 @@ public static class Entries
 
     // Returns null when the body is over the limit. A declared length over the limit is refused before reading;
     // a body without a length (chunked) is counted while it is read.
-    private static async Task<byte[]?> ReadBody(HttpRequest request, int limit, CancellationToken cancel)
+    internal static async Task<byte[]?> ReadBody(HttpRequest request, int limit, CancellationToken cancel)
     {
         if (request.ContentLength > limit)
         {
@@ -210,7 +210,7 @@ public static class Entries
     }
 
     // A missing property and a property that is not a JSON string both read as null.
-    private static string? ReadString(JsonElement root, string name)
+    internal static string? ReadString(JsonElement root, string name)
     {
         if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
         {

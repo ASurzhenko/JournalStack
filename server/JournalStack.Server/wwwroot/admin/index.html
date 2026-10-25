@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JournalStack admin</title>
+    <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+    <p id="message" class="message" hidden></p>
+
+    <section id="login-view" hidden>
+        <h1>JournalStack admin</h1>
+        <form id="login-form">
+            <label for="password">Password</label>
+            <input id="password" type="password" autocomplete="current-password">
+            <button id="login-button" type="submit">Sign in</button>
+        </form>
+    </section>
+
+    <section id="app-view" hidden>
+        <header>
+            <h1>JournalStack admin</h1>
+            <button id="logout-button" type="button">Sign out</button>
+        </header>
+
+        <h2>Tips</h2>
+        <p>The app shows the published tip that was saved last.</p>
+        <table>
+            <thead>
+                <tr><th>Status</th><th>Text</th><th>Saved</th><th></th></tr>
+            </thead>
+            <tbody id="tips-body"></tbody>
+        </table>
+
+        <h3 id="editor-title">New tip</h3>
+        <textarea id="tip-text" rows="4" maxlength="2000"></textarea>
+        <select id="tip-status">
+            <option value="draft">draft</option>
+            <option value="published">published</option>
+        </select>
+        <button id="save-button" type="button">Save</button>
+        <button id="new-button" type="button">New</button>
+
+        <h2>Entries</h2>
+        <button id="refresh-button" type="button">Refresh</button>
+        <table>
+            <thead>
+                <tr><th>Received</th><th>Device</th><th>Sent by the phone</th><th>Text</th></tr>
+            </thead>
+            <tbody id="entries-body"></tbody>
+        </table>
+    </section>
+
+    <script src="admin.js"></script>
+</body>
+</html>
