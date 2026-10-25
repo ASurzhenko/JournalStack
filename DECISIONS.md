@@ -58,7 +58,7 @@ owner in his own words. Status says whether the decision is already in the code.
 
 ## D-007 No antiforgery tokens in the admin
 
-- Status: planned for slot 3.
+- Status: replaced by D-021.
 - Choice: Cookie with `SameSite=Strict`, plus a required `Content-Type: application/json` and a fixed
   `X-Requested-With` header on every change.
 - Why: One admin on one origin. A page on another site can send neither the header nor the content type.
@@ -67,7 +67,7 @@ owner in his own words. Status says whether the decision is already in the code.
 
 ## D-008 A stored admin session instead of a framework cookie
 
-- Status: planned for slot 3.
+- Status: in use from slot 3.
 - Choice: Login creates a random token. Only its hash is stored in `admin_sessions`.
 - Why: The framework's cookie depends on keys inside the container, which are lost on every deploy. The admin
   would be logged out during the live change.
@@ -86,14 +86,15 @@ owner in his own words. Status says whether the decision is already in the code.
 
 - Status: from slot 1.
 - Choice: One global cap on device registration (30 per minute), a per-device cap of 600 requests per hour on
-  all device endpoints, and a per-device cap of 60 entry posts per hour. All live in memory and reset on deploy.
+  all device endpoints, a per-device cap of 60 entry posts per hour, and 5 admin login attempts a minute for the
+  whole server. All live in memory and reset on deploy.
 - Why: The proxy address ranges are not known, and trusting the forwarded IP header would let anyone fake it.
 - Cost: One abuser can use the whole registration cap. Limits reset on every deploy and do not span replicas.
 - Revisit if: There is more than one replica, or real traffic.
 
 ## D-011 Tips have no version, last write wins
 
-- Status: planned for slot 3.
+- Status: in use from slot 3.
 - Choice: No version column on tips.
 - Why: There is one admin.
 - Cost: Two admins editing the same tip would overwrite each other.
@@ -101,8 +102,9 @@ owner in his own words. Status says whether the decision is already in the code.
 
 ## D-012 Small admin
 
-- Status: planned for slot 3.
-- Choice: No statistics, no scheduled publishing, no paging beyond the newest 50 entries.
+- Status: in use from slot 3.
+- Choice: No statistics, no scheduled publishing, no paging beyond the newest 50 entries. No tip delete: a bad
+  tip is set to draft. The tips list shows the newest 100.
 - Why: None of it answers a question the founder asked.
 - Cost: The admin cannot browse older entries.
 - Revisit if: The number of entries grows.
@@ -161,3 +163,60 @@ owner in his own words. Status says whether the decision is already in the code.
   keeps it as `-infinity` or `infinity`) and is read back without a `Z`. An entry that conflicts on insert and then
   cannot be found gives a 500 instead of a dedicated code.
 - Revisit if: Real usage shows up, there is more than one replica, or the admin needs sane dates.
+
+## D-018 Admin pages are Razor Pages in the server project, with a content policy
+
+- Status: in use from slot 3b.
+- Choice: The admin is three pages (sign in, tips, entries) rendered by the server, in the server project. There
+  is no JavaScript. The framework encodes every piece of text it writes. Every admin answer carries
+  `Cache-Control: no-store` and the policy `default-src 'self'; frame-ancestors 'none'; form-action 'self'`.
+- Why: Entry text comes from phones and is shown in the admin. Output encoding plus a policy that blocks inline
+  script means a script-like entry is shown as plain text and cannot run.
+- Cost: The pages live in the server project. A page that needs inline script or a file from another site cannot
+  be added without loosening the policy.
+- Revisit if: The admin needs something a plain form cannot do.
+
+## D-019 Admin login limit
+
+- Status: in use from slot 3.
+- Choice: 5 login attempts a minute for the whole server. A right password counts as an attempt too. The count is
+  taken before the form is read.
+- Why: One admin, so a guessing script should be slow, and there is no trusted client address to count per IP.
+- Cost: Someone who keeps failing locks the real admin out until the minute is over. The count resets on deploy.
+- Revisit if: There is more than one admin or more than one replica.
+
+## D-020 Admin sessions: keyed hash, 8 hours, no renewal, no cleanup
+
+- Status: in use from slot 3.
+- Choice: The session token is random. The table stores a keyed hash of it, and the key is the password hash. A
+  session lasts 8 hours from login. It is not renewed, and expired rows are not deleted.
+- Why: Changing the password hash in the settings ends every session at once, with no extra code.
+- Cost: Typed text is lost if the session ends at the moment of Save. The table gets one row per login.
+- Revisit if: Sessions have to be listed or ended one by one.
+
+## D-021 No antiforgery tokens: SameSite=Strict plus an Origin check
+
+- Status: in use from slot 3b. Replaces D-007.
+- Choice: The session cookie is `SameSite=Strict`. Every admin POST must carry an `Origin` header whose host equals
+  the server's own host, or it is refused with 403 before any page runs. A GET never changes data. The framework's
+  own antiforgery token is switched off in one line in `Program.cs`.
+- Why: The built-in token is encrypted with keys that live inside the container, and those keys are lost on every
+  deploy. A form opened before a deploy would then fail on Save, which is exactly the live-change scene.
+- Cost: There is less depth than with tokens. The check relies on the browser sending `Origin` on form posts, and
+  on the proxy passing the original `Host`. If Railway changes `Host`, every admin POST is a visible 403. A
+  `Referrer-Policy: no-referrer` header added later would make browsers send `Origin: null` on form posts, and
+  every admin POST would be 403. The alternative, `Sec-Fetch-Site: same-origin`, needs no `Host` but is missing in
+  Safari before 16.4.
+- Revisit if: There is more than one admin, or the admin is served from another origin.
+
+## D-022 The admin reads and writes through the server's data code, with no admin JSON API
+
+- Status: in use from slot 3b.
+- Choice: The admin panel is a layer inside the server. It reads and writes through the same data code the API
+  uses, and the browser never talks to the database. The device path is still API to database: a phone posts an
+  entry to `/api/v1/entries` and the server writes the SQL.
+- Why: A server that calls its own API over HTTP needs a base address, a client, a forwarded cookie and two error
+  paths, only to keep one sentence true.
+- Cost: The admin is not a client of the API. Typed text is lost when the database fails at Save, because the
+  answer is an error body and not the form. A double click on Save of a new tip can create two drafts.
+- Revisit if: A second client, such as a mobile admin or scripts, needs admin operations.

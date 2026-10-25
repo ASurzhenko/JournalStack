@@ -2,17 +2,24 @@
 
 ## Now
 
-- Current slot: 3 (admin panel) is done and in `main`, with slots 0, 1 and 2 slice A (entries as text with the
-  idempotency core).
+- Current slot: 3b (the admin front rebuilt as Razor Pages) is done. Slots 0, 1, 2 slice A (entries as text with the
+  idempotency core) and 3 (admin panel) are in `main`.
 - Done: slot 0, slot 1 (server, migrations 0001-0003, tests), slice A: migration 0004, `POST` and `GET`
   `/api/v1/entries`, entry cap, body cap, text checks, the tests and the mutation pass below. Slot 3: login, logout,
   session, tips and entries endpoints, the admin page, 54 new tests (169 in all) and the slot 3 mutation pass below.
+  Slot 3b: the JSON admin API and the static page are replaced by three Razor Pages (sign in, tips, entries), the
+  Origin check replaces the request-header check, 174 tests in all, and the slot 3b mutation pass below. The device
+  API, the migrations and the data model did not change.
 - Next step: slice B of the build order (minimal Unity client, then the first Railway deploy). The images slice
   (0005) and `DELETE /devices/me` come later.
-- Checked against a separate compose stack with curl and SQL, all as expected: cookie flags, CSRF header, lock after
-  five tries, session survives a restart, old session ends on a new hash, 503 and not 401 with the database down.
+- Slot 3 was checked against a separate compose stack with curl and SQL: cookie flags, lock after five tries,
+  session survives a restart, old session ends on a new hash, 503 and not 401 with the database down. Slot 3b was
+  built with `docker compose build` (the Razor views compile in the image) and smoke-checked on a throwaway stack:
+  the login page and the stylesheet answer 200, `/admin` without a session redirects to the login page, and a POST
+  without an `Origin` header is refused with 403.
   Not yet checked in a real browser: entry text that looks like script shown literally, entries dated year 0001 and
-  9999, a 2000-character entry, a double click on Save.
+  9999, a 2000-character entry, a double click on Save (two drafts are the expected result), a form on another
+  origin posting to `/admin`.
 - Open questions: the recruiter's answer about their Railway stack; the exact wording of the 2024 production claim;
   whether to keep the reserved migration number 0005 (D-015).
 
@@ -25,6 +32,7 @@ One line per session: date, focused minutes, slot, minutes to get started again.
 | 2026-10-24 | | 0 | |
 | 2026-10-24 | | 2 (slice A) | |
 | 2026-10-24 | | 3 (admin panel) | |
+| 2026-10-25 | | 3b (admin as Razor Pages) | |
 
 ## Mutation pass, slice A
 
@@ -87,3 +95,64 @@ Each row: one edit to the code, the test run of the admin tests, the result, the
 
 All 25 cycles failed on the test named for them. A run of 6 (15, 20 to 24) was lost to a full system disk and a
 stopped Docker engine, and was run again after both were fixed; mutation 12 was run twice for the same reason.
+
+Slot 3b took about 2 to 2.5 h and was not in the 30 h estimate. The estimate file is unchanged.
+
+Rows 1 to 3, 15 to 17 and 22 above test the JSON front that slot 3b removed. Their equivalents are in the next table.
+
+## Startup log with Razor Pages
+
+Read on a throwaway compose stack. With Razor Pages added, the server starts the Data Protection key ring at
+startup and logs two warnings: keys are stored in a folder inside the container and are lost when the container is
+destroyed, and the key is stored unencrypted. Nothing else changes and nothing fails. No admin request depends on a
+key: the session is the stored session, the built-in antiforgery token is off, and the only cookie the server sets
+is `js_admin` (a test pins this). The warnings will show in the Railway log too.
+
+## Mutation pass, slot 3b
+
+Each row: one edit to the code, the test run of the admin and failure tests, the result, then the edit undone.
+Rows O1 to O14 re-run the slot 3 safeguards against the rewritten tests, N1 to N12 are new for the page front, and
+X1 to X5 were added during the pass.
+
+| # | Edit | Test | Failed |
+|---|---|---|---|
+| O1 | no token filter in the session query | every path needs a session; new hash ends old sessions | yes |
+| O2 | `Secure = false` | cookie is secure only over https | yes |
+| O3 | no `HttpOnly` | login sets a safe cookie | yes |
+| O4 | `SameSite = Lax` | login sets a safe cookie | yes |
+| O5 | no `AdminLogins.TryTake` | sixth login is locked; lockout before the form is read | yes |
+| O6a | `expires_at >= @now` | a session lasts exactly eight hours | yes |
+| O6b | no `expires_at` condition | a session lasts exactly eight hours | yes |
+| O7 | constant key in `SessionHash` | new hash ends old sessions; keyed hash rule | yes |
+| O8 | logout DELETE in a `try/catch` that goes on | delete fails, logout does not pretend | yes |
+| O9 | cookie appended above the INSERT | session insert fails, no cookie at all | yes |
+| O10 | `AddCors` allow-any | preflight gets no cross-site permission | yes |
+| O11 | tip insert in a `try/catch` that goes on | tips table gone | yes |
+| O12 | password in a log line | bad logins; no secret reaches the log | yes |
+| O13 | no `LIMIT 50` | entries list stops at 50 | yes |
+| O14 | no `updated_at = now()` | last write wins; device gets the tip saved last | yes |
+| N1 | Origin check removed | every admin post needs an origin | yes |
+| N2 | missing Origin accepted | every admin post needs an origin | yes |
+| N3 | any present Origin accepted | every admin post needs an origin | yes |
+| N4 | session check removed from the gate | every path needs a session; session lifetime; logout | yes |
+| N5 | exempt list by `StartsWith` | near-miss paths such as `/admin/loginx` | yes |
+| N6 | `Html.Raw` on the entry text | entry shown unchanged, script text encoded | yes |
+| N7 | bad `id` becomes null, as a bound `Guid?` would | an id that is not a guid creates nothing | yes |
+| N8 | no `no-store` | every admin answer is not cached | yes |
+| N9 | no content policy | every admin answer carries the policy | yes |
+| N10 | form value limit removed | oversize value refused (login and tips) | yes, after the tests were tightened (see below) |
+| N11 | `Html.Raw` on the echoed editor text | refused save puts the text back encoded | yes |
+| N12 | `OnGet` that writes | a get never writes anything | yes |
+| X1 | form read before the lockout | lockout answers before the form is read | yes |
+| X2 | no form content-type guard on login | bad login is a 401 | yes |
+| X3 | no form content-type guard on tips | a post that is not a form stores nothing | yes |
+| X4 | `PasswordMatches` always true | bad logins, rules tests, rotation | yes |
+| X5 | no status check | bad tip is a 422 with its own message | yes |
+
+N10 first survived: the oversize tests accepted any refusal, and a 17 KiB tip text is also refused by the text
+rule (422), so they could not tell the form limit from the text rule. They now expect the exact 500 that only the
+framework's refusal produces, and the mutation fails them.
+
+Two framework facts found while testing. A form value that contains a NUL (`%00`) is refused by the form decoder
+itself, before any page code runs, and ends as the same 500 as an oversize value. Nothing is stored and the value
+is not shown back. Control characters other than NUL reach the text rule and give a 422.
