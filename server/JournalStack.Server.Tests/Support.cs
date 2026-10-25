@@ -54,6 +54,10 @@ public sealed class PostgresFixture : IAsyncLifetime
         if (migrate)
         {
             Assert.Equal(0, Migrator.Run(Database.ConnectionString(Config(settings))));
+
+            // The migrator leaves one idle pooled connection per database. With a database per test they would pile up
+            // until the server refuses new ones ("too many clients").
+            NpgsqlConnection.ClearAllPools();
         }
         return settings;
     }
@@ -235,6 +239,83 @@ public sealed class TestApp : WebApplicationFactory<Program>
         var client = CreateClient();
         client.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
         return client;
+    }
+
+    // Hashing costs about 100 ms, so it is done once.
+    public const string AdminTestPassword = "correct horse battery staple";
+    public static readonly string AdminTestHash = Admin.HashPassword(AdminTestPassword);
+
+    public static async Task<TestApp> StartAdminAsync(PostgresFixture db, string? hash = null)
+    {
+        var settings = await db.NewDatabaseAsync();
+        settings["ADMIN_PASSWORD_HASH"] = hash ?? AdminTestHash;
+        return new TestApp(settings);
+    }
+
+    // The client keeps no cookies and follows no redirects, so a test sees exactly what the server sent.
+    public HttpClient AdminClient(string? session = null, bool header = true)
+    {
+        var client = CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false, AllowAutoRedirect = false });
+        if (header)
+        {
+            client.DefaultRequestHeaders.Add("X-Requested-With", Admin.RequestedWith);
+        }
+        if (session is not null)
+        {
+            client.DefaultRequestHeaders.Add("Cookie", $"{Admin.CookieName}={session}");
+        }
+        return client;
+    }
+
+    public async Task<string> LoginAsync(string password = AdminTestPassword)
+    {
+        var response = await AdminClient().PostAsync("/admin/api/login", AdminRequests.Json(new { password }));
+        Assert.Equal(System.Net.HttpStatusCode.NoContent, response.StatusCode);
+        return AdminRequests.CookieValue(response)!;
+    }
+
+    // The endpoints the running host serves under /admin/api, as "VERB path". Read after the host has started.
+    public List<string> AdminRoutes()
+    {
+        _ = Server;
+        return Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>().Endpoints
+            .OfType<Microsoft.AspNetCore.Routing.RouteEndpoint>()
+            .Where(endpoint => endpoint.RoutePattern.RawText!.StartsWith("/admin/api", StringComparison.Ordinal))
+            .SelectMany(endpoint => endpoint.Metadata.GetRequiredMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>().HttpMethods
+                .Select(method => $"{method} {endpoint.RoutePattern.RawText}"))
+            .ToList();
+    }
+
+    public async Task<int> CountAsync(string table)
+    {
+        await using var conn = await PostgresFixture.OpenAsync(Settings);
+        return await Dapper.SqlMapper.ExecuteScalarAsync<int>(conn, $"SELECT count(*) FROM {table}");
+    }
+}
+
+public static class AdminRequests
+{
+    public static StringContent Json(object value)
+    {
+        return new StringContent(System.Text.Json.JsonSerializer.Serialize(value), System.Text.Encoding.UTF8, "application/json");
+    }
+
+    // The value of the admin cookie in a Set-Cookie header, or null when the response sets none.
+    public static string? CookieValue(HttpResponseMessage response)
+    {
+        var line = SetCookie(response);
+        return line?.Split(';')[0][(Admin.CookieName.Length + 1)..];
+    }
+
+    public static string? SetCookie(HttpResponseMessage response)
+    {
+        return response.Headers.TryGetValues("Set-Cookie", out var values) ? values.FirstOrDefault() : null;
+    }
+
+    public static async Task<string?> CodeAsync(HttpResponseMessage response)
+    {
+        var json = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        return json.GetProperty("code").GetString();
     }
 }
 

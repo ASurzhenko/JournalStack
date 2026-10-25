@@ -49,6 +49,19 @@ public class FailureTests
         Assert.Equal("database_unavailable", json.GetProperty("code").GetString());
     }
 
+    // The session filter needs the database before any handler runs, so this covers the filter and the middleware mapping.
+    // The page relies on the 503 to tell "server unavailable" from "signed out".
+    [Fact]
+    public async Task When_the_database_is_down_an_admin_call_answers_503_and_not_401()
+    {
+        await using var app = await StartWithDatabaseDownAsync();
+
+        var response = await app.AdminClient(new string('a', Tokens.Length)).GetAsync("/admin/api/tips");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("database_unavailable", (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+
     [Fact]
     public async Task When_the_database_is_down_health_stays_up_and_ready_says_503()
     {
