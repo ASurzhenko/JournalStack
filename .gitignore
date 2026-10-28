@@ -118,3 +118,6 @@ server/**/obj
 # Unity ignores all csproj/sln; the server projects are real source
 !server/**/*.csproj
 !server/**/*.sln
+
+# Crash dumps from the shell
+*.stackdump
