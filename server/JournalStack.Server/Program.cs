@@ -41,7 +41,7 @@ if (string.IsNullOrEmpty(app.Configuration["ADMIN_PASSWORD_HASH"]))
 
 // Railway ends TLS in front of the server. Only the scheme is read from the proxy, never the client address.
 var forwarded = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedProto };
-forwarded.KnownNetworks.Clear();
+forwarded.KnownIPNetworks.Clear();
 forwarded.KnownProxies.Clear();
 app.UseForwardedHeaders(forwarded);
 

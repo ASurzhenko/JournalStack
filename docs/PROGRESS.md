@@ -36,6 +36,7 @@ One line per session: date, focused minutes, slot, minutes to get started again.
 | 2026-10-24 | | 3 (admin panel) | |
 | 2026-10-25 | | 3b (admin as Razor Pages) | |
 | 2026-10-25 | | 5 (Unity client, minimal form) | |
+| 2026-10-28 | | chore (server to .NET 10 LTS) | |
 
 ## Mutation pass, slice A
 

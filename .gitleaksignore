@@ -1,0 +1,2 @@
+# A marker string in a test that proves a wrong password never reaches the output. It is not a secret.
+05b4a36d6849dd675279896659bba85f525b4823:server/JournalStack.Server.Tests/AdminAuthTests.cs:generic-api-key:10
