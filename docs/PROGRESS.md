@@ -2,16 +2,18 @@
 
 ## Now
 
-- Current slot: 3b (the admin front rebuilt as Razor Pages) is done. Slots 0, 1, 2 slice A (entries as text with the
-  idempotency core) and 3 (admin panel) are in `main`.
+- Current slot: the minimal Unity client (slice B) is built on the branch `feat/unity-client`. Slots 0, 1, 2 slice A
+  (entries as text with the idempotency core), 3 (admin panel) and 3b (the admin front as Razor Pages) are in `main`.
+  The client has 68 EditMode tests, all passing, and was run in Play mode against the local stack (see "Unity
+  client" below). The caret check on a device is not done yet.
 - Done: slot 0, slot 1 (server, migrations 0001-0003, tests), slice A: migration 0004, `POST` and `GET`
   `/api/v1/entries`, entry cap, body cap, text checks, the tests and the mutation pass below. Slot 3: login, logout,
   session, tips and entries endpoints, the admin page, 54 new tests (169 in all) and the slot 3 mutation pass below.
   Slot 3b: the JSON admin API and the static page are replaced by three Razor Pages (sign in, tips, entries), the
   Origin check replaces the request-header check, 174 tests in all, and the slot 3b mutation pass below. The device
   API, the migrations and the data model did not change.
-- Next step: slice B of the build order (minimal Unity client, then the first Railway deploy). The images slice
-  (0005) and `DELETE /devices/me` come later.
+- Next step: the caret check on a phone, then the first Railway deploy. The images slice (0005) and
+  `DELETE /devices/me` come later.
 - Slot 3 was checked against a separate compose stack with curl and SQL: cookie flags, lock after five tries,
   session survives a restart, old session ends on a new hash, 503 and not 401 with the database down. Slot 3b was
   built with `docker compose build` (the Razor views compile in the image) and smoke-checked on a throwaway stack:
@@ -33,6 +35,7 @@ One line per session: date, focused minutes, slot, minutes to get started again.
 | 2026-10-24 | | 2 (slice A) | |
 | 2026-10-24 | | 3 (admin panel) | |
 | 2026-10-25 | | 3b (admin as Razor Pages) | |
+| 2026-10-25 | | 5 (Unity client, minimal form) | |
 
 ## Mutation pass, slice A
 
@@ -156,3 +159,54 @@ framework's refusal produces, and the mutation fails them.
 Two framework facts found while testing. A form value that contains a NUL (`%00`) is refused by the form decoder
 itself, before any page code runs, and ends as the same 500 as an oversize value. Nothing is stored and the value
 is not shown back. Control characters other than NUL reach the text rule and give a 422.
+
+## Unity client (slice B)
+
+Checks that settled facts the design depended on, all made against the local stack in the Editor:
+
+- The Editor sends plain HTTP to `http://127.0.0.1` when "Allow downloads over HTTP" is set to "Allowed in
+  Development Builds". That option is `insecureHttpOption: 1` in `ProjectSettings.asset`.
+- A refused connection and a request that hits the 10 second timeout (server paused) both come back as
+  `ConnectionError`. A reply with a status of 400 or more comes back as `ProtocolError` with `responseCode` set.
+- `JsonUtility` leaves a missing list field empty and not null, so the check for the `entries` key is what catches
+  a wrong shape (the last test in `StateFileTests`).
+- Setting `TMP_InputField.text` from code is not cut at `characterLimit`. Typing is: 2001 typed characters give
+  2000. A pasted or scripted text of 2001 reaches the send step and is refused there with "Too long".
+- Port 8080 on the development machine is used by the Unity MCP server, so `docker compose up` could not bind it.
+  The Play checks ran with the server published on 8081 through a local override file that is not in the repo.
+  The config asset keeps the compose default, 8080.
+
+Play checks against the local stack (P numbers are from the slice plan):
+
+| # | Result |
+|---|---|
+| P1 | Online, tip shown. A first start with no token registered one device by itself (tip 401, register 201, tip 200) |
+| P2 | Tip changed in the database, Refresh showed the new text. The change was made with SQL, not in the admin page |
+| P3 | Entry Pending, then Synced; one row in the database |
+| P4 | Server stopped: row stays Pending, status `Offline · 1 waiting`, `state.json` holds the entry with state 0 |
+| P5 | Play stopped and started again with the server still down: the Pending entry was still listed |
+| P6 | Server started: status `Online`, entry Synced, exactly one row in the database |
+| P7 | Server paused: the ping timed out as `no answer`; after unpause the entry was Synced, one row in the database |
+| P8 | 70 Synced entries and a deleted device row: one registration, 60 entries sent, loop stopped at the cap, status `Online · 10 waiting`, none Failed, 60 rows in the database |
+| P8b | Server restarted: the last 10 went out within a tick, 70 rows, status `Online` |
+| P10 | A 2000 character entry opens in the detail view; scrolled to the end the last line (`...END`) is on screen (screenshot) |
+| P11 | 2001 typed characters give 2000 and the counter reads `2000 / 2000` |
+| P12 | Hand-edited text on a Failed row: Retry shows `Failed · id_conflict`; Refresh leaves it Failed |
+| P13 | Garbage token with the old device row kept: one registration, three old entries `Failed · id_taken`, the new entry Synced |
+
+Not run: the second 401 within 60 seconds of a registration (the throttle path has no test and no Play step), and
+the caret check on a phone.
+
+Safeguards, each seen failing once with the safeguard removed (EditMode run, then the edit undone):
+
+| # | Edit | Test that failed |
+|---|---|---|
+| 1 | `Record` without the Synced-is-final rule | `SyncedIsTerminalForEveryOutcome` |
+| 2 | `AddPending` without the save before it returns | `AddPendingIsOnDiskBeforeItReturns`, `AFailingSaveTakesTheEntryOutAgain`, `AnotherInstanceOnTheSameFileSeesTheEntry` |
+| 3 | `Json.TryParse` without the required key check | `AWrongShapeIsNotAnEmptySuccess`, the `{}` case and `ASecondCorruptionMakesASecondCopy` in `StateFileTests` |
+| 4 | `Merge` without the text comparison | `MergeWithDifferentTextMarksFailedAndNeverSynced` |
+
+Two defects found by looking at the running screen and fixed. The status row and the composer were far taller than
+set, because a layout element with no flexible height set takes the group's value of 1; both now set it to 0. The
+list view destroyed old rows at the end of the frame, so the layout rebuild still counted them; rows are now hidden
+before they are destroyed.

@@ -220,3 +220,67 @@ owner in his own words. Status says whether the decision is already in the code.
 - Cost: The admin is not a client of the API. Typed text is lost when the database fails at Save, because the
   answer is an error body and not the form. A double click on Save of a new tip can create two drafts.
 - Revisit if: A second client, such as a mobile admin or scripts, needs admin operations.
+
+## D-023 The client keeps one file: token and outbox together
+
+- Status: in use from slice B.
+- Choice: `state.json` in the app's private storage holds the device id, the token and every local entry. It is
+  written to a temporary file and moved over the old one. A file that cannot be read is copied aside, never
+  deleted, and the app starts empty with a visible warning.
+- Why: One file means one write, and one step to reset a demo: delete the file.
+- Cost: The token sits in plain text in app-private storage. Someone with an unlocked or rooted phone can read it.
+- Revisit if: The token needs to be protected, or the data grows large enough to need a database.
+
+## D-024 An entry is Pending when the server gave no usable answer, Failed when it refused or crashed
+
+- Status: in use from slice B.
+- Choice: No usable answer is a network error, a timeout, or a status of 429, 502, 503 or 504. The entry stays
+  Pending and the 10 second tick sends it again. The tick stops at the first Pending outcome, so a blocked server
+  costs one request per tick. Any other answer, including 500, makes the entry Failed with the server's `code`, and
+  only the user's Retry sends it again.
+- Why: A silent retry loop against a refusal would only use up the 60 posts an hour. A stopped or busy server is
+  the case where waiting and trying again is right.
+- Cost: A 500 or a refusal needs a tap on Retry. The status line counts failed entries, and that is the only alarm.
+- Revisit if: A real deploy shows the proxy answers something else during a restart.
+
+## D-025 After a 401 the client sends everything it holds again
+
+- Status: in use from slice B.
+- Choice: A 401 means the server does not know this token, so the client registers a new device and marks every
+  local entry Pending, including the ones it had marked Synced. A second 401 within 60 seconds of a registration is
+  final: that entry is Failed `unauthorized` and no new registration starts.
+- Why: A database restored from an older dump has lost what the device stored after the dump. Entry ids are
+  unique, so sending again is safe.
+- Cost: If the token was damaged while the old device row still exists, the old row owns the entries and every
+  resend is refused as `id_taken`. Those rows stay Failed and Retry cannot fix them. The data is safe on the
+  server under the old device. A restore from a dump taken after the device was registered raises no 401, and
+  entries newer than the dump are lost without a sign. A future `DELETE /devices/me` has to clear the local file
+  first, or the client would send again what the user just deleted.
+- Revisit if: The restore drill needs the second case caught.
+
+## D-026 Two server addresses in one config asset
+
+- Status: in use from slice B.
+- Choice: The config asset has an address for the Editor and an address for a device. One line picks by
+  `Application.isEditor`.
+- Why: A phone cannot reach `127.0.0.1`, and one field would need an edit before every device build.
+- Cost: Two fields to keep right.
+- Revisit if: There is a third place to run the client, such as a staging server.
+
+## D-027 No art in the first client
+
+- Status: in use from slice B.
+- Choice: Plain uGUI, default font and flat colours.
+- Why: The client has to prove the data path first. Art is polish and can come later without changing logic.
+- Cost: The first demo looks plain.
+- Revisit if: The first demo needs to look finished.
+
+## D-028 The client polls only `/health`
+
+- Status: in use from slice B.
+- Choice: Every 10 seconds the client asks `/health`. Device endpoints are called on events: start, the server
+  coming back, after a send, on resume and on the Refresh button.
+- Why: A device may make 600 requests an hour, and `/health` is not counted against it.
+- Cost: `/health` does not touch the database, so the client can show Online while every post answers 503. The
+  status line then shows the waiting entries.
+- Revisit if: The server gets a cheap authenticated ping.
