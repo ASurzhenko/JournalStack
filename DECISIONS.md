@@ -3,10 +3,10 @@
 Each entry has four parts: Choice, Why, Cost, Revisit if. The Why lines are drafts and get rewritten by the
 owner in his own words. Status says whether the decision is already in the code.
 
-## D-001 Stack: .NET 9, PostgreSQL, Dapper, DbUp
+## D-001 Stack: .NET 10, PostgreSQL, Dapper, DbUp
 
 - Status: in use from slot 1.
-- Choice: ASP.NET Core minimal API on .NET 9, PostgreSQL, Dapper with hand-written SQL, DbUp for migrations.
+- Choice: ASP.NET Core minimal API on .NET 10, PostgreSQL, Dapper with hand-written SQL, DbUp for migrations.
 - Why: The Unity client is C# too, so one language covers both halves. The SQL is written by hand, so every
   query can be read and explained.
 - Cost: Dapper does not map or migrate anything for us. More SQL is typed by hand.
@@ -284,3 +284,13 @@ owner in his own words. Status says whether the decision is already in the code.
 - Cost: `/health` does not touch the database, so the client can show Online while every post answers 503. The
   status line then shows the waiting entries.
 - Revisit if: The server gets a cheap authenticated ping.
+
+## D-029 Move the server to .NET 10 LTS
+
+- Status: in use from the move.
+- Choice: The server and its tests target .NET 10. The build and runtime images are the 10.0 tags. D-001 now says
+  .NET 10; it started on .NET 9.
+- Why: .NET 9 and .NET 8 reach end of support on 2026-11-10. .NET 10 is the LTS release, supported to Nov 2028.
+- Cost: The .NET 10 SDK has to be installed. Any change in behavior needs a second look; the tests and a compose
+  run were repeated after the move.
+- Revisit if: The next LTS ships.
