@@ -14,7 +14,7 @@ public class MigrationTests
     }
 
     [Fact]
-    public async Task Migrate_creates_the_four_tables_and_a_second_run_changes_nothing()
+    public async Task Migrate_creates_the_tables_and_a_second_run_changes_nothing()
     {
         var settings = await _db.NewDatabaseAsync(migrate: false);
         var connectionString = Database.ConnectionString(PostgresFixture.Config(settings));
@@ -24,6 +24,7 @@ public class MigrationTests
         await using var conn = await PostgresFixture.OpenAsync(settings);
         var tables = (await conn.QueryAsync<string>(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> 'schemaversions'")).ToHashSet();
+        // A migration that creates a table adds its name here.
         Assert.Equal(new HashSet<string> { "devices", "tips", "admin_sessions", "entries" }, tables);
 
         var deviceId = await conn.ExecuteScalarAsync<Guid>("INSERT INTO devices (id, token_hash) VALUES (gen_random_uuid(), '\\x01') RETURNING id");
@@ -36,7 +37,7 @@ public class MigrationTests
         Assert.Equal(0, Migrator.Run(connectionString));
 
         Assert.Equal(journalBefore, await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM schemaversions"));
-        Assert.Equal(4, journalBefore);
+        Assert.Equal(typeof(Migrator).Assembly.GetManifestResourceNames().Count(name => name.EndsWith(".sql")), journalBefore);
         Assert.Equal(1, await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM devices"));
         Assert.Equal("keep me", await conn.ExecuteScalarAsync<string>("SELECT text FROM tips"));
         Assert.Equal("keep me too", await conn.ExecuteScalarAsync<string>("SELECT text FROM entries"));

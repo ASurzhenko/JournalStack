@@ -328,8 +328,9 @@ that also rewrites `entries` failed the second on the row comparison; one that a
 every insert failed the second on the 201 (it got 500). The edits were undone and the full server suite ran: 176
 passed.
 
-Found on the way: `Migrate_creates_the_four_tables_and_a_second_run_changes_nothing` asserts exactly 4 journal
-rows, so it fails the day a fifth script is added. Fix it in that commit.
+Found on the way: the test for a second run asserted exactly 4 journal rows, so it failed the day a fifth script
+was added. It is now `Migrate_creates_the_tables_and_a_second_run_changes_nothing` and counts the embedded scripts.
+It still asserts the set of table names, so a migration that creates a table adds its name there.
 
 ### Not run
 
@@ -340,3 +341,23 @@ rows, so it fails the day a fifth script is added. Fix it in that commit.
 - The scripts on Linux or macOS. `host.docker.internal` is how a container reaches the local database on Docker
   Desktop for Windows; other hosts may need a different address.
 - No scheduled backup exists. The loss window is the time since the last dump.
+
+## CI
+
+The workflow is `.github/workflows/ci.yml`. It runs on a push to `main` and on every pull request, with read-only
+permissions and no secrets. It has two jobs:
+
+- `server`: `dotnet test server/JournalStack.Server.sln -c Release` on `ubuntu-latest` with the .NET 10 SDK. The
+  tests start PostgreSQL through Testcontainers, which uses the Docker that the runner already has.
+- `secrets`: gitleaks 8.30.1 over the full git history, honouring `.gitleaksignore`. The binary comes from the
+  official release and is checked against its published SHA-256 before it runs.
+
+Not in CI: the Unity EditMode tests (they need an Editor licence and a runner image with Unity), the smoke script,
+the backup and restore drill, and any deploy. The Unity tests are run by hand before a client change is merged.
+
+Proven locally on 2026-10-29: the file parses as YAML; `dotnet test server/JournalStack.Server.sln -c Release`
+passed, 176 of 176; `gitleaks git --redact --no-banner .` scanned 30 commits and found no leaks.
+
+Unproven until the first push: the workflow itself has not run on GitHub. Nobody has seen the runner pull the
+PostgreSQL image, the SHA-256 check pass, or both jobs go green there. The Railway "Wait for CI" switch stays off
+until that has happened once (D-031).
