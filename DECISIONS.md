@@ -294,3 +294,17 @@ owner in his own words. Status says whether the decision is already in the code.
 - Cost: The .NET 10 SDK has to be installed. Any change in behavior needs a second look; the tests and a compose
   run were repeated after the move.
 - Revisit if: The next LTS ships.
+
+## D-030 Backups are `pg_dump -Fc` from a same-major image, and a restore is proven
+
+- Status: in use from the local drill.
+- Choice: `scripts/backup.ps1` runs `pg_dump -Fc` inside a `postgres:<major>-alpine` container. The major comes
+  from `SHOW server_version` on the database being dumped, never from a constant. A restore drill puts the dump
+  into a scratch PostgreSQL of the same major, compares row counts of every table and the SHA-256 of `entries` in
+  a fixed order, and runs the smoke test on a server that uses the restored copy.
+- Why: A dump tool older than the server can refuse to run or write a dump that cannot be read back. Reading the
+  version from the database means the script stays right after a version change. A backup that was never restored
+  is a hope, so the drill is part of done. The custom format is compressed and `pg_restore` can read it.
+- Cost: Docker has to run on the machine that takes the dump. The first run pulls a second image to read the
+  version. There is no scheduled backup, so the loss window is the time since the last dump.
+- Revisit if: A scheduled backup is added, or the database moves to a provider with its own point-in-time restore.

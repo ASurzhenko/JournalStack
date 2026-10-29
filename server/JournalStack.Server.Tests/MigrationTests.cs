@@ -1,3 +1,4 @@
+using System.Net;
 using Dapper;
 
 namespace JournalStack.Server.Tests;
@@ -40,6 +41,71 @@ public class MigrationTests
         Assert.Equal("keep me", await conn.ExecuteScalarAsync<string>("SELECT text FROM tips"));
         Assert.Equal("keep me too", await conn.ExecuteScalarAsync<string>("SELECT text FROM entries"));
         Assert.Equal(new byte[] { 0xab, 0xcd }, await conn.ExecuteScalarAsync<byte[]>("SELECT request_hash FROM entries"));
+    }
+
+    [Fact]
+    public async Task The_last_script_applied_on_top_of_older_data_leaves_every_row_as_it_was()
+    {
+        var settings = await _db.NewDatabaseAsync(migrate: false);
+        var connectionString = Database.ConnectionString(PostgresFixture.Config(settings));
+
+        // Schema N is every script except the newest one.
+        var scripts = typeof(Migrator).Assembly.GetManifestResourceNames().Where(name => name.EndsWith(".sql")).OrderBy(name => name).ToList();
+        var olderScripts = DbUp.DeployChanges.To
+            .PostgresqlDatabase(connectionString)
+            .WithScriptsEmbeddedInAssembly(typeof(Migrator).Assembly, name => name.EndsWith(".sql") && name != scripts.Last())
+            .WithTransactionPerScript()
+            .LogToNowhere()
+            .Build();
+        Assert.True(olderScripts.PerformUpgrade().Successful);
+
+        await using var conn = await PostgresFixture.OpenAsync(settings);
+        var deviceId = await conn.ExecuteScalarAsync<Guid>("INSERT INTO devices (id, token_hash) VALUES (gen_random_uuid(), '\\x0102') RETURNING id");
+        await conn.ExecuteAsync("INSERT INTO tips (text, status) VALUES ('older tip', 'published')");
+        const string devicesSql = "SELECT id::text || '|' || encode(token_hash, 'hex') || '|' || created_at::text FROM devices ORDER BY id";
+        const string tipsSql = "SELECT text || '|' || status FROM tips ORDER BY id";
+        var devicesBefore = (await conn.QueryAsync<string>(devicesSql)).ToList();
+        var tipsBefore = (await conn.QueryAsync<string>(tipsSql)).ToList();
+        var journalBefore = await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM schemaversions");
+
+        Assert.Equal(0, Migrator.Run(connectionString));
+
+        Assert.Equal(journalBefore + 1, await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM schemaversions"));
+        Assert.Equal(devicesBefore, (await conn.QueryAsync<string>(devicesSql)).ToList());
+        Assert.Equal(tipsBefore, (await conn.QueryAsync<string>(tipsSql)).ToList());
+        Assert.Equal(deviceId, await conn.ExecuteScalarAsync<Guid>("SELECT id FROM devices"));
+    }
+
+    [Fact]
+    public async Task A_migration_that_only_adds_a_column_keeps_old_entries_and_the_old_request_shape_still_gets_201()
+    {
+        await using var app = await TestApp.StartAsync(_db);
+        var (_, token) = await app.RegisterAsync();
+        var client = app.ClientFor(token);
+        Assert.Equal(HttpStatusCode.Created, (await client.PostEntryAsync(EntryRequests.Golden())).StatusCode);
+
+        await using var conn = await PostgresFixture.OpenAsync(app.Settings);
+        const string entriesSql = "SELECT id::text || '|' || device_id::text || '|' || text || '|' || client_created_at::text || '|' || received_at::text || '|' || encode(request_hash, 'hex') FROM entries ORDER BY id";
+        var entriesBefore = (await conn.QueryAsync<string>(entriesSql)).ToList();
+        Assert.Single(entriesBefore);
+
+        // The next release adds a nullable column. The script is the test's own, so the test does not depend on what the next real script is.
+        var additive = DbUp.DeployChanges.To
+            .PostgresqlDatabase(Database.ConnectionString(PostgresFixture.Config(app.Settings)))
+            .WithScript("9999_test_add_column.sql", "ALTER TABLE entries ADD COLUMN mood integer;")
+            .WithTransactionPerScript()
+            .LogToNowhere()
+            .Build();
+        Assert.True(additive.PerformUpgrade().Successful);
+
+        Assert.Equal(entriesBefore, (await conn.QueryAsync<string>(entriesSql)).ToList());
+        Assert.Null(await conn.ExecuteScalarAsync<int?>("SELECT mood FROM entries"));
+
+        // A client built before the migration sends exactly what it sent before.
+        Assert.Equal(HttpStatusCode.OK, (await client.PostEntryAsync(EntryRequests.Golden())).StatusCode);
+        var newEntry = EntryRequests.Body("5c1f3b0e-3b7a-4a54-8f0e-2d6b8a4f9c01", "written after the migration", EntryRequests.GoldenCreatedAt);
+        Assert.Equal(HttpStatusCode.Created, (await client.PostEntryAsync(newEntry)).StatusCode);
+        Assert.Equal(2, await conn.ExecuteScalarAsync<int>("SELECT count(*) FROM entries"));
     }
 
     [Fact]

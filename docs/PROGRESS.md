@@ -22,6 +22,9 @@
   Not yet checked in a real browser: entry text that looks like script shown literally, entries dated year 0001 and
   9999, a 2000-character entry, a double click on Save (two drafts are the expected result), a form on another
   origin posting to `/admin`.
+- Slot 6, local half: backup script, timed restore drill, bad-migration rehearsal and two migration tests are
+  done on the branch `chore/backup-restore-drill` (see "Backup and restore drill (local)" below). The Railway half
+  (TCP proxy dump, rollback, volume backups) is not run.
 - Open questions: the recruiter's answer about their Railway stack; the exact wording of the 2024 production claim;
   whether to keep the reserved migration number 0005 (D-015).
 
@@ -211,3 +214,129 @@ Two defects found by looking at the running screen and fixed. The status row and
 set, because a layout element with no flexible height set takes the group's value of 1; both now set it to 0. The
 list view destroyed old rows at the end of the frame, so the layout rebuild still counted them; rows are now hidden
 before they are destroyed.
+
+## Backup and restore drill (local)
+
+Run on 2026-10-29 against the local compose stack (PostgreSQL 16.15). Nothing here touched Railway.
+
+What exists now:
+
+- `scripts/backup.ps1 -OutFile <path>` dumps the database with `pg_dump -Fc`. It reads `PGHOST`, `PGPORT`,
+  `PGUSER`, `PGPASSWORD`, `PGDATABASE`, the same names as the server. With none set it uses the local compose
+  database and the password in `.env`. It asks the database for `SHOW server_version` and runs `pg_dump` from the
+  `postgres:<major>-alpine` image with that major. If the version cannot be read, it stops with an error. It
+  refuses to overwrite a file, and it checks that the dump is not empty and that `pg_restore --list` can read it.
+- `scripts/restore-drill.ps1` puts a device and an entry into the source, dumps, restores into a scratch
+  PostgreSQL of the same major (own container, port 5541, own volume), and compares the two databases. It then
+  starts the server image on the restored database (port 8082) and runs `scripts/smoke.ps1` against it. The scratch
+  container, the volume, the server container and the temp folder are removed at the end, also when a step fails.
+- `scripts/common.ps1` holds the small helpers both scripts use.
+
+The drill compares three things between the source and the restored copy: the list of tables, the row count of
+every table (including the DbUp journal), and the SHA-256 of `COPY (SELECT * FROM entries ORDER BY id) TO STDOUT`.
+
+Real numbers from the passing run (source: 78 entries, 9 devices, 1 tip, 4 journal rows):
+
+| What | Value |
+|---|---|
+| Dump size | 15,503 bytes |
+| `pg_dump` alone | 0.9 s |
+| `backup.ps1` as the drill ran it (includes reading the version) | 2.7 s |
+| Restore into the scratch database | 0.8 s |
+| Whole drill (dump, restore, compare, server start, smoke, 401 steps, cleanup) | 15.5 s |
+
+The first run also pulled the `postgres:alpine` image that is used only to read the version. That is not in the
+times above.
+
+Result of the passing run:
+
+| Check | Result |
+|---|---|
+| Table lists equal | yes |
+| Row counts equal, every table | yes |
+| Entries SHA-256 equal | yes (`8532db34...e50b`) |
+| `smoke.ps1` on the server running on the restored database | PASS |
+| Device made before the dump keeps its token and sees its entry | yes, 200 |
+| Device made after the dump is unknown | 401 |
+| That client registers again and sends its entry again, same id | 201, 201 |
+| Scratch container, volume and server container gone afterwards | yes |
+
+What a restore does to a client: devices created since the dump get 401. The client registers again and sends
+every entry it has not confirmed again. The entry id makes the second send safe. The reset of the local entries to
+Pending is covered by the Unity EditMode test `OutboxTests.ResetAllToPendingLiftsSyncedAndFailed`. The loop of
+register and resend in the controller is not an EditMode test; it was seen in Play check P13. The drill shows the
+server half of it.
+
+Both directions. A gate that has only said yes is not shown to be a gate, so each comparison was made to fail on a
+copy of the script (the copies are deleted):
+
+| Edit in a copy of the drill, after the restore | Output | Exit code |
+|---|---|---|
+| Delete one row of `entries` in the restored copy | counts 80 against 79, hashes differ, `FAIL compare : row counts differ; entries hash differs` | 1 |
+| Change the text of one entry, row count unchanged | `FAIL compare : entries hash differs` | 1 |
+
+Both failed runs still removed the scratch container and volume. Two more refusals were run by hand: `backup.ps1`
+with a wrong password stops with the PostgreSQL error and a non-zero exit code, writes no file and prints no
+password; `backup.ps1` with a file name that exists is refused.
+
+### Bad migration, local rehearsal
+
+A file `0005_rehearsal_broken.sql` was added to `server/JournalStack.Server/Migrations/` (not committed, deleted
+afterwards). It adds a column and then selects from a table that does not exist:
+
+```
+ALTER TABLE entries ADD COLUMN mood integer;
+SELECT * FROM table_that_does_not_exist;
+```
+
+Commands, from the repo root, with the compose stack up:
+
+```
+docker compose build migrate
+docker compose run --rm --no-deps migrate
+```
+
+Observed:
+
+| Check | Before | After |
+|---|---|---|
+| `migrate` exit code | | 1 (`Migration failed with PostgresException.`, 42P01) |
+| `schemaversions` rows and newest script | 4, `0004_entries.sql` | 4, `0004_entries.sql` |
+| Rows in entries, devices, tips | 83, 14, 1 | 83, 14, 1 |
+| Column `entries.mood` exists | no | no (the script runs in one transaction, so the first line was rolled back) |
+| The running server container | up, old image | still up, 13 minutes, `smoke.ps1` PASS against it |
+
+After deleting the file and rebuilding `migrate`, a run printed "No new scripts need to be executed" and exited 0.
+The migrate container prints `Cannot load library libgssapi_krb5.so.2` on every run, also the clean one. It does
+not change the exit code.
+
+This is the local half of failure mode 6. On Railway the same command is the pre-deploy step; that part is not run.
+
+### Migration tests
+
+`MigrationTests` already had a test that a second run changes nothing. Two were missing and are added:
+
+- `The_last_script_applied_on_top_of_older_data_leaves_every_row_as_it_was`: builds schema N (every script but the
+  newest), seeds a device and a tip, applies the newest script through `Migrator.Run`, and compares every seeded
+  row and the journal count.
+- `A_migration_that_only_adds_a_column_keeps_old_entries_and_the_old_request_shape_still_gets_201`: stores an entry
+  through the API, applies a test-owned script that adds a nullable column, then checks the old row is identical,
+  the old request body still answers 200 as a retry, and a new entry in the old shape answers 201.
+
+Each was made to fail once: a temporary newest script that rewrites `tips` failed the first; an additive script
+that also rewrites `entries` failed the second on the row comparison; one that adds a check constraint that refuses
+every insert failed the second on the 201 (it got 500). The edits were undone and the full server suite ran: 176
+passed.
+
+Found on the way: `Migrate_creates_the_four_tables_and_a_second_run_changes_nothing` asserts exactly 4 journal
+rows, so it fails the day a fifth script is added. Fix it in that commit.
+
+### Not run
+
+- A dump through the Railway TCP proxy, and the steps to open and close it.
+- A Railway rollback, and what Railway does with the pre-deploy step on a rollback.
+- Railway volume backups.
+- A restore of a dump taken from a database whose major version differs from the local one.
+- The scripts on Linux or macOS. `host.docker.internal` is how a container reaches the local database on Docker
+  Desktop for Windows; other hosts may need a different address.
+- No scheduled backup exists. The loss window is the time since the last dump.
