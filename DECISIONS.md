@@ -311,15 +311,16 @@ owner in his own words. Status says whether the decision is already in the code.
 
 ## D-031 CI runs the server tests and a history secret scan
 
-- Status: written; the workflow has not run on GitHub yet.
+- Status: in use. The workflow ran green on a pull request and on the push to `main` (2026-10-29).
 - Choice: One GitHub Actions file with two jobs. `server` runs the server test suite. `secrets` runs gitleaks over
   the full history with a pinned version and a checksum check. It runs on a push to `main` and on pull requests.
-  The Railway "Wait for CI" switch stays off until the workflow has run green once on GitHub. The Unity tests are
-  not in CI.
+  The Railway "Wait for CI" switch stays off until the first deploy, because Railway is not connected yet. The
+  Unity tests are not in CI.
 - Why: The tests and the secret scan already exist and already pass on this machine. Running them on every push
   means a broken migration or a leaked key shows up before a deploy, not after. Waiting for CI would make Railway
-  hold every deploy behind a check nobody has seen pass, so the switch waits for one green run. Unity EditMode
+  hold every deploy behind the checks, so the switch is turned on only after they have passed on GitHub. They
+  have passed; it stays off because there is no Railway service yet. Unity EditMode
   tests need an Editor licence and a runner image with Unity. That is more setup than the stand is worth.
-- Cost: The Unity client is checked by hand. The workflow is unproven until the first push, and a Docker or runner
-  change on GitHub could fail the server job for a reason that is not in the code.
+- Cost: The Unity client is checked by hand. A Docker or runner change on GitHub could fail the server job for a
+  reason that is not in the code.
 - Revisit if: The first run fails, or the client grows past what a manual EditMode run before a merge can cover.

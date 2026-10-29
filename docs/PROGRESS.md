@@ -358,6 +358,9 @@ the backup and restore drill, and any deploy. The Unity tests are run by hand be
 Proven locally on 2026-10-29: the file parses as YAML; `dotnet test server/JournalStack.Server.sln -c Release`
 passed, 176 of 176; `gitleaks git --redact --no-banner .` scanned 30 commits and found no leaks.
 
-Unproven until the first push: the workflow itself has not run on GitHub. Nobody has seen the runner pull the
-PostgreSQL image, the SHA-256 check pass, or both jobs go green there. The Railway "Wait for CI" switch stays off
-until that has happened once (D-031).
+Proven on GitHub on 2026-10-29: the workflow ran green on pull request #1 (`server` 1 min 6 s, `secrets` 8 s). The
+merge into `main` then ran it on a push: both jobs passed (run 40971089067, commit `e6b7340`). The runner pulled
+the PostgreSQL image and the SHA-256 check passed.
+
+The Railway "Wait for CI" switch is off. Railway is not connected yet, so it stays off until the first deploy
+(D-031).
