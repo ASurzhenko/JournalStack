@@ -111,6 +111,7 @@ InitTestScene*.unity*
 # Server, secrets, dumps
 .vscode/
 .env
+docker-compose.override.yml
 *.dump
 server/**/bin
 server/**/obj
