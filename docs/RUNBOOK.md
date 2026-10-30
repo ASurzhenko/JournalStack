@@ -216,14 +216,13 @@ made to fail on purpose (one row deleted, then one text changed) and stopped wit
 
 ### Local database from a dump
 
-These are the drill's restore steps pointed at the compose database. The drill runs them against a scratch
-database; this exact sequence on the compose database has not been run.
+These are the drill's restore steps pointed at the compose database. Take a dump with section 4 first.
 
 **This deletes the local database first.**
 
 ```powershell
 docker compose down -v
-docker compose up -d db
+docker compose up -d --wait db
 $env:PGPASSWORD = Read-Host "PGPASSWORD from .env"
 docker run --rm -e PGPASSWORD -v "${PWD}\backups:/out" postgres:16-alpine pg_restore --exit-on-error --no-owner --no-privileges -h host.docker.internal -p 5440 -U journal -d journalstack /out/journalstack-local-2026-10-30.dump
 Remove-Item env:PGPASSWORD
@@ -232,6 +231,15 @@ powershell -File scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8080
 ```
 
 The dump carries the migration journal, so `migrate` finds nothing new to run.
+
+`--wait` matters. Without it `docker compose up -d db` returns while a new database is still setting itself up,
+and `pg_restore` fails with "server closed the connection unexpectedly". Nothing is written in that case, so run the
+`docker run ... pg_restore` line again.
+
+Run on 2026-10-30 against the compose database (PostgreSQL 16.15, 84 entries, 15 devices, 1 tip, 4 journal rows):
+dump 16,541 bytes, database healthy 3.1 s after `up`, restore 0.8 s. Table list, the row count of every table and
+the SHA-256 of all `entries` rows in id order were equal before and after. `migrate` printed "No new scripts need to
+be executed" and the smoke test passed.
 
 ### Railway
 
