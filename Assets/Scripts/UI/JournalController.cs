@@ -20,14 +20,16 @@ namespace JournalStack.Client
         [SerializeField] private ComposerView _composer;
         [SerializeField] private EntryListView _list;
         [SerializeField] private DetailView _detail;
+        [SerializeField] private DeleteDataView _deleteView;
 
         private Outbox _outbox;
         private ApiClient _api;
         private bool _online;
 
-        // Stale-answer guards. A generation bump (OnDestroy) drops every answer that arrives later; the
-        // counters keep only the newest tip/list answer; _inFlight stops two sends of one id at once.
+        // Stale-answer guards. A generation bump (OnDestroy, or a finished delete) drops every answer that
+        // arrives later; the counters keep only the newest tip/list answer; _inFlight stops two sends of one id at once.
         private int _generation;
+        private bool _destroyed;
         private int _tipRequest;
         private int _listRequest;
         private readonly HashSet<string> _inFlight = new HashSet<string>();
@@ -36,6 +38,9 @@ namespace JournalStack.Client
         private bool _registering;
         private DateTime _lastRegisteredUtc = DateTime.MinValue;
 
+        // Stops two DELETE requests at once, like _registering does for registration.
+        private bool _deleteSending;
+
         private void Start()
         {
             _ = RunSafe(StartupAsync);
@@ -43,10 +48,13 @@ namespace JournalStack.Client
 
         private void OnDestroy()
         {
+            _destroyed = true;
             _generation++;
             Application.focusChanged -= OnFocus;
             _refreshButton.onClick.RemoveListener(OnRefreshClicked);
             _composer.SendClicked -= OnSendClicked;
+            _deleteView.OpenClicked -= OnDeleteOpen;
+            _deleteView.DeleteConfirmed -= OnDeleteConfirmed;
         }
 
         private async Task RunSafe(Func<Task> work)
@@ -63,12 +71,13 @@ namespace JournalStack.Client
 
         private async Task StartupAsync()
         {
-            int gen = _generation;
             _outbox = new Outbox(Path.Combine(Application.persistentDataPath, "state.json"));
             _api = new ApiClient(_config.BaseUrl);
 
             _refreshButton.onClick.AddListener(OnRefreshClicked);
             _composer.SendClicked += OnSendClicked;
+            _deleteView.OpenClicked += OnDeleteOpen;
+            _deleteView.DeleteConfirmed += OnDeleteConfirmed;
             Application.focusChanged += OnFocus;
 
             if (_outbox.Warning != null)
@@ -77,16 +86,24 @@ namespace JournalStack.Client
             }
 
             Render();
-            await RunSafe(() => SyncOnce(gen));
-            while (gen == _generation)
+            if (_outbox.DeleteRequested)
+            {
+                _deleteView.ShowWaiting();
+            }
+
+            // The loop lives as long as the app. Each tick takes the current generation, so a finished delete
+            // (which bumps it) drops older answers without ending the loop.
+            await RunSafe(() => SyncOnce(_generation));
+            while (!_destroyed)
             {
                 await Task.Delay(TickMilliseconds);
-                if (gen != _generation)
+                if (_destroyed)
                 {
                     return;
                 }
 
-                await RunSafe(() => SyncOnce(gen));
+                int tickGen = _generation;
+                await RunSafe(() => SyncOnce(tickGen));
             }
         }
 
@@ -142,6 +159,12 @@ namespace JournalStack.Client
                 return;
             }
 
+            if (_outbox.DeleteRequested)
+            {
+                await SendDelete(gen);
+                return;
+            }
+
             if (!wasOnline)
             {
                 await RefreshAll(gen);
@@ -156,6 +179,12 @@ namespace JournalStack.Client
         private async Task SendNewAsync(string raw)
         {
             int gen = _generation;
+            if (_outbox.DeleteRequested)
+            {
+                _composer.SetError("Your data is being deleted. Write again when it is done.");
+                return;
+            }
+
             if (!EntryRules.TryClean(raw, out string text, out string error))
             {
                 _composer.SetError(error);
@@ -179,6 +208,11 @@ namespace JournalStack.Client
         private async Task RetryAsync(string id)
         {
             int gen = _generation;
+            if (_outbox.DeleteRequested)
+            {
+                return;
+            }
+
             _outbox.Record(id, SyncState.Pending, "");
             Render();
             if (await TrySend(gen, id) && gen == _generation)
@@ -238,6 +272,11 @@ namespace JournalStack.Client
 
             try
             {
+                if (_outbox.DeleteRequested)
+                {
+                    return false;
+                }
+
                 LocalEntry entry = _outbox.Find(id);
                 if (entry == null || entry.state == SyncState.Synced)
                 {
@@ -290,7 +329,7 @@ namespace JournalStack.Client
         // may have lost it), and let the normal sending pick it up.
         private async Task HandleUnauthorized(int gen, string entryId)
         {
-            if (_registering)
+            if (_outbox.DeleteRequested || _registering)
             {
                 return;
             }
@@ -316,7 +355,7 @@ namespace JournalStack.Client
                 _registering = false;
             }
 
-            if (gen != _generation)
+            if (gen != _generation || _outbox.DeleteRequested)
             {
                 return;
             }
@@ -347,6 +386,109 @@ namespace JournalStack.Client
                 string code = outcome == Outcome.Refused ? reason : "register_failed";
                 _outbox.Record(entryId, SyncState.Failed, code);
             }
+        }
+
+        private void OnDeleteOpen()
+        {
+            _deleteView.ShowConfirm(_outbox.Entries.Count);
+        }
+
+        private void OnDeleteConfirmed()
+        {
+            _ = RunSafe(StartDeleteAsync);
+        }
+
+        private async Task StartDeleteAsync()
+        {
+            int gen = _generation;
+            if (!_outbox.MarkDeleteRequested(out string error))
+            {
+                _deleteView.ShowResult("Could not save on this device: " + error + ". Nothing was sent.");
+                return;
+            }
+
+            _deleteView.ShowWorking();
+            await SendDelete(gen);
+        }
+
+        // Runs from the confirm and, while the flag is set, from every tick. The local file is cleared only
+        // after the server confirmed, so a delete that never arrives can still be sent again.
+        private async Task SendDelete(int gen)
+        {
+            if (_deleteSending)
+            {
+                return;
+            }
+
+            _deleteSending = true;
+            try
+            {
+                Reply reply = await _api.SendAsync("DELETE", "/api/v1/devices/me", null, _outbox.Token);
+                if (gen != _generation)
+                {
+                    return;
+                }
+
+                switch (DeleteOutcome.Classify(reply, out string reason))
+                {
+                    case DeleteResult.Done:
+                        // Entries refused as id_taken belong to an older device on the server (D-025). This delete
+                        // did not reach them, so the text has to say so.
+                        int keptByOldDevice = CountTaken();
+                        bool saved = _outbox.Clear(out string saveError);
+                        _generation++;
+                        _lastRegisteredUtc = DateTime.MinValue;
+                        Render();
+                        _deleteView.ShowResult(DoneText(keptByOldDevice, saved, saveError));
+                        break;
+                    case DeleteResult.NoAnswer:
+                        if (reply.NetworkError)
+                        {
+                            SetOnline(false);
+                        }
+
+                        _deleteView.ShowWaiting();
+                        break;
+                    default:
+                        _deleteView.ShowResult(_outbox.CancelDelete(out string cancelError)
+                            ? "The server refused the delete (" + reason + "). Nothing was deleted."
+                            : "The server refused the delete (" + reason + "). Nothing was deleted, but this device could not save that ("
+                                + cancelError + ").");
+                        break;
+                }
+            }
+            finally
+            {
+                _deleteSending = false;
+            }
+        }
+
+        private int CountTaken()
+        {
+            int n = 0;
+            foreach (LocalEntry entry in _outbox.Entries)
+            {
+                if (entry.state == SyncState.Failed && entry.reason == "id_taken")
+                {
+                    n++;
+                }
+            }
+
+            return n;
+        }
+
+        private static string DoneText(int keptByOldDevice, bool saved, string saveError)
+        {
+            string text = keptByOldDevice == 0
+                ? "Your entries were deleted from the server and from this device."
+                : "Deleted from this device and from the server, except " + keptByOldDevice
+                    + " entries the server keeps under an older registration of this app. The admin can remove them.";
+            if (!saved)
+            {
+                text += " This device could not save the change (" + saveError + "). It finishes on the next start.";
+            }
+
+            return text;
         }
 
         private async Task RefreshAll(int gen)

@@ -27,5 +27,8 @@ namespace JournalStack.Client
         public string deviceId;
         public string token;
         public List<LocalEntry> entries = new List<LocalEntry>();
+
+        // Set before the delete request is sent and kept until the server confirmed it, so a restart finishes the delete.
+        public bool deleteRequested;
     }
 }
