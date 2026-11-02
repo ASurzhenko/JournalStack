@@ -21,7 +21,8 @@ publishes tips, and reads the entries that came in. All data in it is made up fo
 ```
 
 - **Unity app** (`Assets/`). One screen: a status line, the tip card, a text box and the list of the person's
-  entries. Each entry shows Pending, Synced or Failed.
+  entries. Each entry shows Pending, Synced or Failed. A Delete my data button removes the person's data from the
+  server and from the phone.
 - **Server** (`server/JournalStack.Server/`). One program. It answers the app on `/api/v1/...` and serves the
   admin pages on `/admin/...`.
 - **Admin pages** (`server/JournalStack.Server/Pages/Admin/`). Three pages: sign in, tips, entries. The browser
@@ -79,6 +80,7 @@ repo root.
    ```
 
    Compose starts PostgreSQL, then runs the `migrate` step, then starts the server only if `migrate` succeeded.
+   This keeps the window busy and shows the server log. Open a second PowerShell window for step 4.
 
 4. Check that it answers:
 
@@ -86,8 +88,7 @@ repo root.
    powershell -File scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8080
    ```
 
-   It prints one `ok` line per step and `PASS` at the end. It leaves one test device and one entry named
-   "smoke test ..." in the database.
+   It prints one `ok` line per step and `PASS` at the end. It deletes its test device and entry at the end.
 
 5. Admin pages: open `http://127.0.0.1:8080/admin` in a browser and sign in with the password from step 2.
 
@@ -100,8 +101,9 @@ server on another port. The app's Editor address then has to match.
 Tests:
 
 - Server: `dotnet test server/JournalStack.Server.sln`. The tests start their own PostgreSQL in Docker, so
-  Docker must be running. The last full run passed 176 of 176 ([docs/PROGRESS.md](docs/PROGRESS.md)).
-- App: Unity, Window > General > Test Runner > EditMode. 68 tests, run by hand before a client change is merged.
+  Docker must be running. The last full run passed 188 of 188 ([docs/PROGRESS.md](docs/PROGRESS.md)).
+- App: Unity, Window > General > Test Runner > EditMode. 93 tests, all passing on the last run. They are run by hand
+  before a client change is merged.
 
 ## What runs where
 

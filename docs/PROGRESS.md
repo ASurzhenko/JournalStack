@@ -12,8 +12,11 @@
   Slot 3b: the JSON admin API and the static page are replaced by three Razor Pages (sign in, tips, entries), the
   Origin check replaces the request-header check, 174 tests in all, and the slot 3b mutation pass below. The device
   API, the migrations and the data model did not change.
-- Next step: the caret check on a phone, then the first Railway deploy. The images slice (0005) and
-  `DELETE /devices/me` come later.
+- Slice D1 (delete my data) is written on the branch `feat/delete-device`: the server route and its tests, the
+  client code, the scene wiring and the EditMode tests are done and run (93 of 93). The Play checks are not run
+  yet (see "Delete (slice D1)" below).
+- Next step: finish the D1 Editor steps, the caret check on a phone, then the first Railway deploy. The images
+  slice (0005) comes later.
 - Slot 3 was checked against a separate compose stack with curl and SQL: cookie flags, lock after five tries,
   session survives a restart, old session ends on a new hash, 503 and not 401 with the database down. Slot 3b was
   built with `docker compose build` (the Razor views compile in the image) and smoke-checked on a throwaway stack:
@@ -40,6 +43,7 @@ One line per session: date, focused minutes, slot, minutes to get started again.
 | 2026-10-25 | | 3b (admin as Razor Pages) | |
 | 2026-10-25 | | 5 (Unity client, minimal form) | |
 | 2026-10-28 | | chore (server to .NET 10 LTS) | |
+| 2026-10-30 | | D1 (delete my data) | |
 
 ## Mutation pass, slice A
 
@@ -364,3 +368,66 @@ the PostgreSQL image and the SHA-256 check passed.
 
 The Railway "Wait for CI" switch is off. Railway is not connected yet, so it stays off until the first deploy
 (D-031).
+
+## Delete (slice D1)
+
+Run on 2026-10-30. The server half and the EditMode half ran. The Play checks did not.
+
+Server: 188 tests passed, 0 failed (176 before, 12 new: eight tests, one of them a theory with four cases, plus one
+in `FailureTests`). The full run took 1 min 34 s.
+
+Smoke test against the local compose stack (published on 8081): `PASS`, 10 `ok` lines. Run twice, and the database
+held 16 devices and 85 entries before and after, so it leaves nothing behind.
+
+Server safeguards, each seen failing once with the safeguard removed (`DeviceTests` run, then the edit undone):
+
+| # | Edit | Test that failed |
+|---|---|---|
+| M1 | route mapped on `app` instead of `device` (no filter) | the four cases of `Delete_without_a_token_or_with_a_wrong_one_answers_401_and_deletes_nothing`, `After_delete_the_old_token_gets_401_on_every_route_and_stores_nothing`, and five more that need the filter |
+| M2 | `DELETE FROM devices` without the `WHERE` | `Delete_me_answers_204_and_removes_this_device_and_its_entries_only`, `After_delete_an_old_entry_id_is_free_so_only_the_app_can_stop_a_resend` |
+| M3 | statement in a `try/catch` that still answers 204 | `When_the_delete_fails_inside_the_handler_the_answer_is_500_and_nothing_is_deleted` |
+| M4 | `Results.NotFound()` when no row was deleted | `A_delete_whose_device_row_is_held_by_an_open_delete_waits_and_then_answers_204`, `Two_deletes_at_once_give_no_server_error_and_the_device_is_gone` |
+| M5 | no request cap in the filter | `A_capped_device_gets_429_on_delete_keeps_its_data_and_can_delete_when_the_window_reopens` and the existing `One_device_is_capped_per_hour_and_other_devices_are_not_affected` |
+
+Client: 25 EditMode tests were added to the 68 that were there, and 93 of 93 pass (2.6 s). The first run had one
+failure, a wrong expectation in the new test `ClearRemovesTokenDeviceEntriesAndTheFlagOnDisk`: after a reload a
+cleared token reads as an empty string, not `null`. The test was fixed, the code was not.
+
+| Where | Tests |
+|---|---|
+| `DeleteOutcomeTests` | 19 cases: 204, our 401, three 401s that are not ours, five no-answer codes, network error, seven refused codes, the server's code in a refusal |
+| `OutboxTests` | 5: flag on disk before return, failing save, clear, cancel, cancel that cannot save |
+| `StateFileTests` | 1 new (old file without the flag), the round trip extended |
+
+Client safeguards, each seen failing once with the safeguard removed (EditMode run, then the edit undone):
+
+| # | Edit | Tests that failed |
+|---|---|---|
+| CM1 | `MarkDeleteRequested` without the save | `MarkDeleteRequestedIsOnDiskBeforeItReturns`, `AFailingSaveLeavesDeleteNotRequested` |
+| CM2 | `Classify` accepts any 401 | the three cases of `A401WithoutOurCodeIsRefusedAndNeverDone` |
+| CM3 | `Classify` returns `Done` for any 2xx | `EveryOtherStatusIsRefused` for 200 and 201 |
+| CM4 | `Clear` leaves the token | `ClearRemovesTokenDeviceEntriesAndTheFlagOnDisk` |
+
+The scene was wired through Unity MCP: `DeleteButton` (with `DeleteDataView`) in `StatusRow`, `DeletePanel` last
+under `Canvas`. Every field was read back from the live objects with its name and type, and none is null.
+
+Play checks against the local stack (not run: the Docker engine did not answer, the system disk was full):
+
+| # | Result |
+|---|---|
+| P-D1 | not run |
+| P-D2 | not run |
+| P-D3 | not run |
+| P-D4 | not run |
+| P-D5 | not run |
+| P-D5b | optional, not run |
+| P-D6 | not run |
+| P-D7 | not run |
+| P-D8 | not run |
+| Play mutation on P-D8 | not run |
+
+Not tested, reasoned only: the `TrySend` guard, the check after `RegisterAsync` in `HandleUnauthorized`, and the
+generation bump after the clear.
+
+Disk: the system disk (C:) was full, so some commands failed and the Docker engine stopped answering. The repo is
+on D:.
