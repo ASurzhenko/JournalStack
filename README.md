@@ -1,9 +1,13 @@
 # JournalStack
 
-JournalStack is a small journal app with its own server, database and admin pages. A phone app written in Unity
-lets a person write short journal entries and shows a "tip of the day". The entries go to a server, and the
-server stores them in a PostgreSQL database. An admin signs in to web pages on the same server, writes and
-publishes tips, and reads the entries that came in. All data in it is made up for testing.
+JournalStack is a small journal app. I built it myself and I run it myself, from the phone to the database. You
+write short notes in a Unity app and get a tip of the day. Every note goes to my server and gets saved in
+PostgreSQL. There are also a few admin pages on the same server where I log in, add tips and read what people
+wrote.
+
+I wanted to show the whole thing working, including the boring stuff that keeps it alive. Database changes that
+don't break older versions of the app. Retries that don't make duplicates. Backups that I have actually restored.
+And a way for a person to delete all their data. All the data in the demo is fake.
 
 ## The four parts
 
