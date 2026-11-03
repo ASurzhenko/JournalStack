@@ -61,6 +61,9 @@ Shown by:
 - `AdminContentTests`: `An_entry_posted_by_a_device_shows_in_the_admin_list_unchanged_and_newest_first`.
 - `AdminPageTests`: `The_rendered_pages_contain_no_script_no_event_attribute_and_no_style_attribute`,
   `Every_admin_answer_is_not_cached_and_carries_the_content_policy`.
+- In a browser on the local stack, an entry with `<script>` and `onerror` text was shown as that literal text, with no
+  dialog. Entries dated year 0001 and 9999 and a 2000-character entry were listed in full ([PROGRESS.md](PROGRESS.md),
+  "Delete (slice D1)").
 - Each of these safeguards was removed once on purpose, and the named test failed each time (mutation tables in
   [PROGRESS.md](PROGRESS.md)).
 
@@ -184,10 +187,25 @@ Shown by:
 - App tests: `DeleteOutcomeTests` (which answers count as done, no answer or refused) and the delete tests in
   `OutboxTests` and `StateFileTests`. Each client safeguard was removed once and a named test failed
   ([PROGRESS.md](PROGRESS.md), "Delete (slice D1)").
-- Play checks P-D1 to P-D8 and the Play mutation: not run yet.
+- Play checks (local stack, Editor, [PROGRESS.md](PROGRESS.md), "Delete (slice D1)"):
+  - P-D1: a delete with two entries gave `DELETE -> 204`, the device and entries were gone, and the app held no token.
+  - P-D3: with the server down the app showed the waiting text, also after a restart, and sent no entry and made no
+    new registration. When the server came back the delete went through.
+  - P-D4: a lost answer (the device row deleted while the server was paused) ended with `DELETE -> 401` and Done.
+    The Pending entry was never sent.
+  - P-D5: with a database trigger that refuses the delete, the app got `500` every 10 seconds, kept its data and
+    kept waiting. After the trigger was dropped the next try gave `204`.
+  - P-D6: after a delete a new entry registers a new device and is sent once.
+  - P-D7: while the waiting panel is up it blocks every tap, so no new entry can be written.
+  - P-D8, one run: a tip request answered `401` while the delete flag was set. No new device was registered.
 
-Reasoned, not tested: the guard in `TrySend`, the check after `RegisterAsync` in `HandleUnauthorized`, and the
-generation bump after the clear. No repeatable run reaches the timing they cover.
+Reasoned, not tested:
+- The guard in `TrySend`, the check after `RegisterAsync` in `HandleUnauthorized`, and the generation bump after
+  the clear. No repeatable run reaches the timing they cover.
+- The guard in `SendNewAsync`. The waiting panel blocks the input before it is reached (P-D7).
+- The guard at the top of `HandleUnauthorized`. P-D8 ran with it in place and no device was registered, but the
+  guard was never removed to see a registration appear, so the run does not show that the guard is the reason.
+- A refusal by an older server without the route (P-D5b was not run). Only the `DeleteOutcomeTests` cover it.
 
 ## Other risks, stated plainly
 
@@ -198,7 +216,9 @@ generation bump after the clear. No repeatable run reaches the timing they cover
   one shared admin, no second factor, and someone who keeps failing locks the real admin out for that minute.
 - **A form on another site posting to the admin.** Every admin POST must carry this site's own `Origin`, or it is
   refused with 403 before any page runs (D-021). Test:
-  `Every_admin_post_needs_an_origin_that_is_this_site_and_a_refused_post_changes_nothing` (`AdminAuthTests`).
+  `Every_admin_post_needs_an_origin_that_is_this_site_and_a_refused_post_changes_nothing` (`AdminAuthTests`). Also
+  tried in a browser on the local stack: a form on a page at another address posted to `/admin`, the answer was 403
+  `csrf_origin`, and no tip was created.
 - **Railway itself is down.** Not covered. The only copy outside Railway is the last dump on the owner's computer.
 - **A wrong clock on the phone.** The phone's time is shown only. The server stores its own receive time beside it,
   and a strange phone date never costs the entry (D-017). Test:
@@ -236,9 +256,8 @@ These are planned for the first deploy and are marked FILL AFTER DEPLOY in [RUNB
 - The Unity EditMode tests (93) are not in CI. They need a Unity licence and a runner image with Unity, which is more
   setup than the stand is worth. They are run by hand before a client change is merged (D-031).
 - The second 401 within 60 seconds of a registration has no test and no Play check.
-- Checks in a real browser not done yet: script-like entry text shown as text, entries dated year 0001 and 9999, a
-  2000-character entry, a double click on Save, and a form on another site posting to `/admin`. The server tests
-  cover the same rules, without a browser.
+- A double click on Save in the tip form was tried once in a browser and gave one draft. The page reloaded after the
+  first click, so the second click missed the button. A real double submit has not been produced in a browser.
 
 **Phone.**
 - The caret in the text box and reading a long entry in full were not checked on a device. They were skipped for lack

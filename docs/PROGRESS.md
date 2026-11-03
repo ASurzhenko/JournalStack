@@ -13,18 +13,19 @@
   Origin check replaces the request-header check, 174 tests in all, and the slot 3b mutation pass below. The device
   API, the migrations and the data model did not change.
 - Slice D1 (delete my data) is written on the branch `feat/delete-device`: the server route and its tests, the
-  client code, the scene wiring and the EditMode tests are done and run (93 of 93). The Play checks are not run
-  yet (see "Delete (slice D1)" below).
-- Next step: finish the D1 Editor steps, the caret check on a phone, then the first Railway deploy. The images
-  slice (0005) comes later.
+  client code, the scene wiring and the EditMode tests are done and run (93 of 93). The Play checks ran on
+  2026-11-03: P-D1 to P-D6 and P-D8 passed, P-D7 showed that the panel blocks input, the Play mutation and P-D5b
+  were not run (see "Delete (slice D1)" below). The confirm panel no longer offers a delete when the app holds
+  nothing.
+- Next step: the caret check on a phone, then the first Railway deploy. The images slice (0005) comes later.
 - Slot 3 was checked against a separate compose stack with curl and SQL: cookie flags, lock after five tries,
   session survives a restart, old session ends on a new hash, 503 and not 401 with the database down. Slot 3b was
   built with `docker compose build` (the Razor views compile in the image) and smoke-checked on a throwaway stack:
   the login page and the stylesheet answer 200, `/admin` without a session redirects to the login page, and a POST
   without an `Origin` header is refused with 403.
-  Not yet checked in a real browser: entry text that looks like script shown literally, entries dated year 0001 and
-  9999, a 2000-character entry, a double click on Save (two drafts are the expected result), a form on another
-  origin posting to `/admin`.
+  Checked in a real browser on 2026-11-03 (see "Delete (slice D1)"): script-like text shown literally, entries
+  dated year 0001 and 9999, a 2000-character entry, a form on another site refused with 403. A double click on
+  Save gave one draft and did not produce a real double submit.
 - Slot 6, local half: backup script, timed restore drill, bad-migration rehearsal and two migration tests are
   done on the branch `chore/backup-restore-drill` (see "Backup and restore drill (local)" below). The Railway half
   (TCP proxy dump, rollback, volume backups) is not run.
@@ -44,6 +45,7 @@ One line per session: date, focused minutes, slot, minutes to get started again.
 | 2026-10-25 | | 5 (Unity client, minimal form) | |
 | 2026-10-28 | | chore (server to .NET 10 LTS) | |
 | 2026-10-30 | | D1 (delete my data) | |
+| 2026-11-03 | | D1 (Play checks, admin browser checks) | |
 
 ## Mutation pass, slice A
 
@@ -371,7 +373,8 @@ The Railway "Wait for CI" switch is off. Railway is not connected yet, so it sta
 
 ## Delete (slice D1)
 
-Run on 2026-10-30. The server half and the EditMode half ran. The Play checks did not.
+The server half and the EditMode half ran on 2026-10-30. The Play checks and the admin browser checks ran on
+2026-11-03.
 
 Server: 188 tests passed, 0 failed (176 before, 12 new: eight tests, one of them a theory with four cases, plus one
 in `FailureTests`). The full run took 1 min 34 s.
@@ -411,23 +414,49 @@ Client safeguards, each seen failing once with the safeguard removed (EditMode r
 The scene was wired through Unity MCP: `DeleteButton` (with `DeleteDataView`) in `StatusRow`, `DeletePanel` last
 under `Canvas`. Every field was read back from the live objects with its name and type, and none is null.
 
-Play checks against the local stack (not run: the Docker engine did not answer, the system disk was full):
+Play checks against the local stack, run on 2026-11-03 in the Editor. The server was published on 8080 and 8081.
+The `Net` lines are from the Editor log, the rows from `psql`. The database held 16 devices and 85 entries before
+the checks and again after each completed delete.
 
-| # | Result |
+| # | Result | Evidence |
+|---|---|---|
+| P-D1 | passed | Two entries Synced. The first tap opened the confirm, which said 2 entries. Delete gave the Done text, an empty list and `Online`. Log: one `DELETE /api/v1/devices/me -> 204`. The device row and both entries were gone. `state.json`: no token, no device id, `deleteRequested` false, 0 entries. `/admin/entries` no longer listed the two entries. |
+| P-D2 | passed | The panel opened and Cancel closed it. No `DELETE` in the log. Run again with one Synced entry (the confirm said 1 entry): no `DELETE`, the entry stayed Synced and stayed in the database. |
+| P-D3 | passed | Server stopped, confirm: `DELETE -> no answer`, Waiting text. Play stopped and started with the server still down: Waiting text at once, composer covered, no `DELETE` sent while the ping failed. Server started: `DELETE -> 204` within a tick. No `POST /api/v1/devices` and no `POST /api/v1/entries` between the confirm and Done. Rows gone, flag cleared. |
+| P-D4 | passed | Server paused, a new entry stayed Pending (`POST /api/v1/entries -> no answer`), confirm gave `DELETE -> no answer`. The device row was deleted with SQL, then unpause: `DELETE -> 401`, Done. No `POST /api/v1/devices`, and no `POST /api/v1/entries` that got an answer. Neither the Synced nor the Pending entry was in the database. |
+| P-D5 | passed | With the refusing trigger on `devices`: Waiting text and 18 `DELETE -> 500` over about 2.5 minutes, one every 10 seconds plus a few extra that fit the focus handler. The device and its entry stayed in the database. The server log held no `DELETEMARKER`. After the trigger was dropped, the next tick gave `DELETE -> 204` and the rows were gone. A query showed no trigger and no function left. |
+| P-D5b | not run | Optional. The classification of a refusal is covered by `EveryOtherStatusIsRefused`. |
+| P-D6 | passed | After P-D1 a new entry: `GET /api/v1/tip/today -> 401`, one `POST /api/v1/devices -> 201`, `POST /api/v1/entries -> 201`. One new device row with one entry. |
+| P-D7 | panel blocks input | While the Waiting panel was up no tap reached the text box or Send. `state.json` still held its one entry and the typed text was not in it. The "being deleted" text in `SendNewAsync` was therefore not reached from the screen. |
+| P-D8 | passed, 1 run | Two entries Synced, Play restarted first. A script paused the server and, once `deleteRequested` was set in `state.json`, ran the SQL delete of the device row and unpaused 0.7 s later. Refresh, then Delete, were tapped within a few seconds. Log order: `GET /api/v1/tip/today -> 401`, `DELETE /api/v1/devices/me -> 401`, `GET /api/v1/entries -> 401`. The tip answer came first, so it reached `HandleUnauthorized` while the flag was set. No `POST /api/v1/devices`. Done text, rows gone. |
+| Play mutation on P-D8 | not run | Not done. The run above shows what happens with the guard in place. It does not show that the run would register without the guard. |
+
+The Play checks do not cover the `TrySend` guard, the check after `RegisterAsync` in `HandleUnauthorized`, the guard
+in `SendNewAsync` (the panel blocks the input first), the top guard in `HandleUnauthorized` as the cause of P-D8
+(no mutation), and the generation bump after the clear. They are reasoned from the code.
+
+Found while running the checks:
+
+- The confirm panel offered Delete when there was nothing to delete, with the text "Your 0 entries". Fixed in
+  `JournalController.OnDeleteOpen`. With no token and no entries the panel now says "Nothing to delete. This app has
+  no data on the server or on this device." with only Close, and no request is sent. With a token and 0 entries the
+  delete stays, because the server still has the device row, and the text says that the app's registration is
+  removed. All other cases are unchanged. Checked in Play: a fresh start registered a device (`POST /api/v1/devices
+  -> 201`), the confirm showed the registration text, Delete gave `DELETE /api/v1/devices/me -> 204` and the device
+  row was gone. Opened again right after, the panel said "Nothing to delete" and the log shows no further `DELETE`.
+  The EditMode tests all passed after the change.
+- The Waiting panel has no button. With the server down the app stays on it until the server answers. This is the
+  choice in D-032 and is not changed.
+
+Admin checks in a real browser, on the local stack, 2026-11-03. Test entries were sent through the device API
+(`BT1` to `BT4`) and then read on `/admin/entries`:
+
+| Check | Result |
 |---|---|
-| P-D1 | not run |
-| P-D2 | not run |
-| P-D3 | not run |
-| P-D4 | not run |
-| P-D5 | not run |
-| P-D5b | optional, not run |
-| P-D6 | not run |
-| P-D7 | not run |
-| P-D8 | not run |
-| Play mutation on P-D8 | not run |
+| Script-like text (`<script>alert(1)</script> <img src=x onerror=alert(2)> &amp; <b>bold</b>`) | shown as that literal text; no dialog, no bold, no image |
+| Entry dated year 0001, entry dated year 9999 | both listed, the page did not fail. The page showed `0001-01-01 00:00:00 UTC` and `9999-12-31 23:59:59 UTC`. The database holds year 0001 as `-infinity` |
+| 2000-character entry | shown in full, the last characters `-END` visible |
+| Double click on Save in the tip form | one draft, not two. The page reloaded after the first click and the button moved, so the second click did not reach Save. A real double submit was not produced in a browser |
+| Form on another site (a page on `localhost:9000` posting to `/admin`) | `403` with code `csrf_origin`, no tip created (0 rows), `POST /admin ... 403` in the server log |
 
-Not tested, reasoned only: the `TrySend` guard, the check after `RegisterAsync` in `HandleUnauthorized`, and the
-generation bump after the clear.
-
-Disk: the system disk (C:) was full, so some commands failed and the Docker engine stopped answering. The repo is
-on D:.
+The first attempt on 2026-10-30 did not run: the Docker engine did not answer and the system disk was full.
