@@ -37,6 +37,8 @@ The order is always the same: the migrations run first, and the new server start
 docker compose up --build
 ```
 
+This keeps the window busy and shows the server log. Run the smoke test below in a second PowerShell window.
+
 Compose runs `db`, then `migrate` (`dotnet JournalStack.Server.dll migrate`), then `server`. If `migrate` exits
 with an error, `server` does not start. Then check it:
 
@@ -61,7 +63,7 @@ After every deploy, run the smoke test against the hosted address:
 powershell -File scripts/smoke.ps1 -BaseUrl https://FILL-AFTER-DEPLOY
 ```
 
-The smoke test leaves one device and one entry named "smoke test ..." in the database. There is no delete route.
+The smoke test deletes its own device and entry at the end, so it leaves nothing behind.
 
 The "Wait for CI" switch on Railway stays off until the first deploy (D-031). FILL AFTER DEPLOY: whether it was
 turned on.
@@ -82,6 +84,8 @@ git log --oneline -5
 git checkout <previous-commit>
 docker compose up --build
 ```
+
+This keeps the window busy and shows the server log. Run any other command in a second PowerShell window.
 
 `migrate` then finds nothing new to run and the older server starts on the same database.
 
@@ -130,6 +134,9 @@ becomes `0005_add_entry_mood.sql` and is renamed before its first Railway run.
    docker compose up --build
    powershell -File scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8080
    ```
+
+   The first line keeps the window busy and shows the server log. Run the second line, the smoke test, in a second
+   PowerShell window.
 
    The smoke test sends entries without `mood`, so a `PASS` shows the old request shape still gets 201.
 
@@ -230,6 +237,9 @@ docker compose up --build
 powershell -File scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8080
 ```
 
+The `docker compose up --build` line keeps the window busy and shows the server log. Run the last line, the smoke
+test, in a second PowerShell window.
+
 The dump carries the migration journal, so `migrate` finds nothing new to run.
 
 `--wait` matters. Without it `docker compose up -d db` returns while a new database is still setting itself up,
@@ -259,6 +269,8 @@ and the next run would skip it.
 docker compose down -v
 docker compose up --build
 ```
+
+This keeps the window busy and shows the server log. Run any other command in a second PowerShell window.
 
 The migrations build the empty database again. There is no seed script; demo data is typed in through the app and
 the admin pages.
@@ -335,7 +347,8 @@ docker compose up -d
 
 Nothing typed on the phone is lost. Entries stay Pending in the app's file and go out when the server answers again,
 each exactly once (Play checks P4 to P7 in [PROGRESS.md](PROGRESS.md)). The app polls `/health` only, so it can show
-Online while every post gets 503. The waiting entries in the status line show it (D-028).
+Online while every post gets 503. The waiting entries in the status line show it (D-028). While a delete waits for
+the server, the app takes no new entries (D-032).
 
 ### Railway
 
@@ -364,9 +377,21 @@ FILL AFTER DEPLOY: how the Railway database password is changed and how the serv
 
 ### A device token
 
-There is no route to cancel one token. `DELETE /api/v1/devices/me` is planned and not built (D-014). Deleting the
-device row by hand also deletes all of its entries (test `Deleting_a_device_deletes_its_entries` in
-`MigrationTests`).
+`DELETE /api/v1/devices/me` removes the calling device and its entries (D-014). There is still no way to cancel a
+token without deleting its data.
+
+A person's delete does not reach an older device row. That happens when the app lost its token and registered
+again: the old row keeps the entries, and the app shows them as `Failed` with `id_taken` (D-025, D-032). Remove
+the old device by hand. Deleting the device row also deletes all of its entries (test
+`Deleting_a_device_deletes_its_entries` in `MigrationTests`). Find the owner of an entry, then delete that
+device:
+
+```powershell
+docker compose exec db psql -U journal -d journalstack -c "SELECT device_id FROM entries WHERE id = '<entry id>'"
+docker compose exec db psql -U journal -d journalstack -c "DELETE FROM devices WHERE id = '<device id>'"
+```
+
+FILL AFTER DEPLOY: how to run the same two statements against the Railway database.
 
 ### A secret that reached git
 

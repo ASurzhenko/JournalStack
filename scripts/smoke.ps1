@@ -1,6 +1,6 @@
 # Smoke test for a running JournalStack server (local or hosted).
 # Usage: powershell -File scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8081
-# Leaves one device and one entry named "smoke test ..." in the database. There is no delete endpoint.
+# Registers one device, sends one entry, and deletes both at the end.
 # Never prints the device token or any header.
 param(
     [Parameter(Mandatory = $true)][string]$BaseUrl
@@ -90,5 +90,9 @@ if ($code -ne $wantCode) {
     Fail "conflict code" "expected $wantCode, got $code"
 }
 Write-Host "ok   conflict code"
+
+# 7. Delete this device. Its entry goes with it, and the old token is unknown from now on.
+ExpectStatus "DELETE /api/v1/devices/me" (Send "DELETE" "/api/v1/devices/me" $token $null) 204
+ExpectStatus "GET /api/v1/entries (after delete)" (Send "GET" "/api/v1/entries" $token $null) 401
 
 Write-Host "PASS"

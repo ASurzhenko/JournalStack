@@ -120,7 +120,7 @@ owner in his own words. Status says whether the decision is already in the code.
 
 ## D-014 Device deletion by cascade
 
-- Status: cascade foreign key in 0004 and tested. The route comes in a later slice.
+- Status: in use from slice D1. Route `DELETE /api/v1/devices/me`, tests in `DeviceTests`, app flow in D-032.
 - Choice: `DELETE /api/v1/devices/me` removes the device and, by foreign key cascade, its entries and images.
 - Why: It is the plain answer to a request to delete a person's data.
 - Cost: There is no undo.
@@ -254,8 +254,7 @@ owner in his own words. Status says whether the decision is already in the code.
 - Cost: If the token was damaged while the old device row still exists, the old row owns the entries and every
   resend is refused as `id_taken`. Those rows stay Failed and Retry cannot fix them. The data is safe on the
   server under the old device. A restore from a dump taken after the device was registered raises no 401, and
-  entries newer than the dump are lost without a sign. A future `DELETE /devices/me` has to clear the local file
-  first, or the client would send again what the user just deleted.
+  entries newer than the dump are lost without a sign. A delete in progress turns this off, see D-032.
 - Revisit if: The restore drill needs the second case caught.
 
 ## D-026 Two server addresses in one config asset
@@ -324,3 +323,26 @@ owner in his own words. Status says whether the decision is already in the code.
 - Cost: The Unity client is checked by hand. A Docker or runner change on GitHub could fail the server job for a
   reason that is not in the code.
 - Revisit if: The first run fails, or the client grows past what a manual EditMode run before a merge can cover.
+
+## D-032 Deleting is finished by the app, not called off
+
+- Status: in use from slice D1.
+- Choice: The app saves `deleteRequested` in `state.json` before it sends the delete, and while it is set it sends
+  only the delete: no sync, no new registration after a 401, no new entries. A 204, or a 401 with code
+  `unauthorized`, means done: the app clears the token, the device id and every local entry, and is a fresh install
+  after that. A refusal (a `4xx` other than our `401`) clears the flag and changes nothing. No answer, and a `500`,
+  keep the flag, and the tick and the next start send the delete again. A `500` is kept because it can come after
+  the delete already happened.
+- Why: A deleted device answers every old request with 401, and D-025 would then register a new device and send
+  everything again. The flag is the one thing that survives a restart, so a delete whose answer was lost still ends
+  cleanly. (Draft. The owner rewrites this in their own words.)
+- Cost: Once sent, a delete cannot be called off. Offline, no new entry can be written until the server answers. If
+  the server never answers again, the app stays on the waiting panel for good, and the only way out is to delete
+  `state.json` (RUNBOOK section 6). A server that keeps answering `500` keeps the panel up too. When D-025 has left
+  entries `Failed` with `id_taken` under an older device, the delete removes only the current device. The app says
+  how many entries stay on the server, and the old row is removed by hand (RUNBOOK section 9). If the token itself
+  is damaged and the delete is the first request, the delete gets `401` and the app reports done with no count. The
+  same happens when a damaged `state.json` was copied aside and the app started empty: it cannot see the older
+  data. The delete counts against the 600 requests an hour like any call. A registration that finished just after
+  the person confirmed leaves an empty device row. Server backups taken before the delete still hold the entries.
+- Revisit if: Real people use it (backups, an audit record of deletions).

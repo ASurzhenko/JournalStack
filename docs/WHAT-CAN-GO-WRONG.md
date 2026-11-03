@@ -1,7 +1,7 @@
 # What can go wrong
 
 Each row is one way the stand can fail, what happens then, and the test or rehearsal that shows it. Server tests
-are in `server/JournalStack.Server.Tests/`, app tests in `Assets/Tests/EditMode/`. Play checks (P1 to P13) and the
+are in `server/JournalStack.Server.Tests/`, app tests in `Assets/Tests/EditMode/`. Play checks (P1 to P13, and P-D1 to P-D8 for delete) and the
 drills are written up in [PROGRESS.md](PROGRESS.md). Decisions (D-numbers) are in [DECISIONS.md](../DECISIONS.md).
 
 ## The failures
@@ -61,6 +61,9 @@ Shown by:
 - `AdminContentTests`: `An_entry_posted_by_a_device_shows_in_the_admin_list_unchanged_and_newest_first`.
 - `AdminPageTests`: `The_rendered_pages_contain_no_script_no_event_attribute_and_no_style_attribute`,
   `Every_admin_answer_is_not_cached_and_carries_the_content_policy`.
+- In a browser on the local stack, an entry with `<script>` and `onerror` text was shown as that literal text, with no
+  dialog. Entries dated year 0001 and 9999 and a 2000-character entry were listed in full ([PROGRESS.md](PROGRESS.md),
+  "Delete (slice D1)").
 - Each of these safeguards was removed once on purpose, and the named test failed each time (mutation tables in
   [PROGRESS.md](PROGRESS.md)).
 
@@ -151,6 +154,59 @@ Shown by:
   `The_last_script_applied_on_top_of_older_data_leaves_every_row_as_it_was` (`MigrationTests`).
 - `Register_ignores_whatever_body_an_older_or_odd_client_sends` (`DeviceTests`).
 
+### 10. A person deletes their data, and the answer is lost or the server is down
+
+The person taps Delete my data and confirms. The phone goes offline, the server is down, or the answer never
+arrives.
+
+What happens: the app saves a flag in its file before it sends the delete. While the flag is set, the app sends only
+the delete. It sends no entries and makes no new registration. The server answers 204 and removes the device and its
+entries. The app clears its token and entries only after that answer. A 401 in the server's own shape counts as the
+same answer, because the server then holds nothing for this token. If there is no answer, or the server answers 500
+(it may have deleted before it failed), the flag stays. The app sends the delete again every 10 seconds and at the
+next start. A refusal clears the flag and changes nothing. The trap is D-025: a deleted device gets 401 on every old
+request, and the app would register again and send everything it holds. The flag turns that off (D-032). Once the
+delete is sent it cannot be called off, and the panel stays until the server answers.
+
+One case the delete does not cover: if the app lost its token earlier and registered again, the old device row keeps
+its entries. The app counts those entries (`Failed` with `id_taken`) and says that they stay on the server. The
+admin removes them by hand ([RUNBOOK.md](RUNBOOK.md), section 9).
+
+Shown by:
+- Server tests (`DeviceTests`): `Delete_me_answers_204_and_removes_this_device_and_its_entries_only`,
+  `After_delete_the_old_token_gets_401_on_every_route_and_stores_nothing`,
+  `Delete_without_a_token_or_with_a_wrong_one_answers_401_and_deletes_nothing`,
+  `After_delete_an_old_entry_id_is_free_so_only_the_app_can_stop_a_resend`,
+  `When_the_delete_fails_inside_the_handler_the_answer_is_500_and_nothing_is_deleted`,
+  `Two_deletes_at_once_give_no_server_error_and_the_device_is_gone`,
+  `A_delete_whose_device_row_is_held_by_an_open_delete_waits_and_then_answers_204`,
+  `A_capped_device_gets_429_on_delete_keeps_its_data_and_can_delete_when_the_window_reopens`. In `FailureTests`:
+  `When_the_database_is_down_a_delete_answers_503_and_never_204`. Each server safeguard was removed once and a named
+  test failed ([PROGRESS.md](PROGRESS.md), "Delete (slice D1)").
+- `scripts/smoke.ps1` deletes its own device on a running server and checks that the old token is then refused.
+- App tests: `DeleteOutcomeTests` (which answers count as done, no answer or refused) and the delete tests in
+  `OutboxTests` and `StateFileTests`. Each client safeguard was removed once and a named test failed
+  ([PROGRESS.md](PROGRESS.md), "Delete (slice D1)").
+- Play checks (local stack, Editor, [PROGRESS.md](PROGRESS.md), "Delete (slice D1)"):
+  - P-D1: a delete with two entries gave `DELETE -> 204`, the device and entries were gone, and the app held no token.
+  - P-D3: with the server down the app showed the waiting text, also after a restart, and sent no entry and made no
+    new registration. When the server came back the delete went through.
+  - P-D4: a lost answer (the device row deleted while the server was paused) ended with `DELETE -> 401` and Done.
+    The Pending entry was never sent.
+  - P-D5: with a database trigger that refuses the delete, the app got `500` every 10 seconds, kept its data and
+    kept waiting. After the trigger was dropped the next try gave `204`.
+  - P-D6: after a delete a new entry registers a new device and is sent once.
+  - P-D7: while the waiting panel is up it blocks every tap, so no new entry can be written.
+  - P-D8, one run: a tip request answered `401` while the delete flag was set. No new device was registered.
+
+Reasoned, not tested:
+- The guard in `TrySend`, the check after `RegisterAsync` in `HandleUnauthorized`, and the generation bump after
+  the clear. No repeatable run reaches the timing they cover.
+- The guard in `SendNewAsync`. The waiting panel blocks the input before it is reached (P-D7).
+- The guard at the top of `HandleUnauthorized`. P-D8 ran with it in place and no device was registered, but the
+  guard was never removed to see a registration appear, so the run does not show that the guard is the reason.
+- A refusal by an older server without the route (P-D5b was not run). Only the `DeleteOutcomeTests` cover it.
+
 ## Other risks, stated plainly
 
 - **Guessing the admin password.** Five attempts a minute for the whole server, a right password counts too, and
@@ -160,7 +216,9 @@ Shown by:
   one shared admin, no second factor, and someone who keeps failing locks the real admin out for that minute.
 - **A form on another site posting to the admin.** Every admin POST must carry this site's own `Origin`, or it is
   refused with 403 before any page runs (D-021). Test:
-  `Every_admin_post_needs_an_origin_that_is_this_site_and_a_refused_post_changes_nothing` (`AdminAuthTests`).
+  `Every_admin_post_needs_an_origin_that_is_this_site_and_a_refused_post_changes_nothing` (`AdminAuthTests`). Also
+  tried in a browser on the local stack: a form on a page at another address posted to `/admin`, the answer was 403
+  `csrf_origin`, and no tip was created.
 - **Railway itself is down.** Not covered. The only copy outside Railway is the last dump on the owner's computer.
 - **A wrong clock on the phone.** The phone's time is shown only. The server stores its own receive time beside it,
   and a strange phone date never costs the entry (D-017). Test:
@@ -189,16 +247,17 @@ These are planned for the first deploy and are marked FILL AFTER DEPLOY in [RUNB
   a second place to keep the database password (D-030).
 - A restore from a dump of a different PostgreSQL major version has not been tested. The drill uses the same major
   on both sides.
+- A delete does not reach backups. A dump taken before the delete still holds the entries until that file is
+  removed.
 - The scripts were only run on Windows with Docker Desktop. `host.docker.internal` may need another address on
   other systems.
 
 **Tests.**
-- The Unity EditMode tests (68) are not in CI. They need a Unity licence and a runner image with Unity, which is more
+- The Unity EditMode tests (93) are not in CI. They need a Unity licence and a runner image with Unity, which is more
   setup than the stand is worth. They are run by hand before a client change is merged (D-031).
 - The second 401 within 60 seconds of a registration has no test and no Play check.
-- Checks in a real browser not done yet: script-like entry text shown as text, entries dated year 0001 and 9999, a
-  2000-character entry, a double click on Save, and a form on another site posting to `/admin`. The server tests
-  cover the same rules, without a browser.
+- A double click on Save in the tip form was tried once in a browser and gave one draft. The page reloaded after the
+  first click, so the second click missed the button. A real double submit has not been produced in a browser.
 
 **Phone.**
 - The caret in the text box and reading a long entry in full were not checked on a device. They were skipped for lack
@@ -206,13 +265,11 @@ These are planned for the first deploy and are marked FILL AFTER DEPLOY in [RUNB
 
 **Features.**
 - Images in entries are not built. Migration 0005 is kept for them (D-015).
-- `DELETE /api/v1/devices/me` is not built, so a person cannot delete their own data from the app. The database part
-  is there: deleting a device deletes its entries (D-014).
 - No way to cancel a single device token.
 - The admin shows only the newest 50 entries and the newest 100 tips. There is one admin account (D-012).
 - No seed script. Demo data is typed in through the app and the admin.
 
 **What real use would need on top.** All data here is made up. A journal with real people's text would need at
-least: deletion on request in the app, a database user with only the rights the server needs, encrypted storage of
+least: an audit record of deletions and a way to remove a person's data from old backups, a database user with only the rights the server needs, encrypted storage of
 the token on the phone (today it is plain text in the app's private storage, D-023), a scheduled backup kept
 somewhere other than the host, more than one admin with a second factor, and limits that survive a deploy.

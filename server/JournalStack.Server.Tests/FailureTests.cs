@@ -49,6 +49,18 @@ public class FailureTests
         Assert.Equal("database_unavailable", json.GetProperty("code").GetString());
     }
 
+    [Fact]
+    public async Task When_the_database_is_down_a_delete_answers_503_and_never_204()
+    {
+        await using var app = await StartWithDatabaseDownAsync();
+
+        var response = await app.ClientFor(new string('a', Tokens.Length)).DeleteAsync("/api/v1/devices/me");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("database_unavailable", json.GetProperty("code").GetString());
+    }
+
     // The gate needs the database before any page runs, and it does not catch database errors.
     // An outage must never look like a sign-out, so the answer is 503 and not a redirect to the login page.
     [Fact]

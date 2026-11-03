@@ -52,6 +52,16 @@ public static class Api
             return tip is null ? Results.NoContent() : Results.Ok(tip);
         });
 
+        // Deletes this device. The foreign key cascade deletes its entries in the same statement (D-014).
+        // No row deleted means a second delete got here first; the device is gone either way, so the answer is the same.
+        device.MapDelete("/devices/me", async (NpgsqlDataSource db, HttpContext http) =>
+        {
+            var deviceId = (Guid)http.Items[DeviceIdKey]!;
+            await using var conn = await db.OpenConnectionAsync(http.RequestAborted);
+            await conn.ExecuteAsync("DELETE FROM devices WHERE id = @deviceId", new { deviceId });
+            return Results.NoContent();
+        });
+
         Entries.Map(device);
         Admin.Map(app);
     }
