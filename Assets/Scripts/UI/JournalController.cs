@@ -388,9 +388,21 @@ namespace JournalStack.Client
             }
         }
 
+        // No token and no entries: the server holds nothing for this app, so there is nothing to send.
+        // A token with no entries still has a device row on the server, so the delete stays.
         private void OnDeleteOpen()
         {
-            _deleteView.ShowConfirm(_outbox.Entries.Count);
+            int localEntries = _outbox.Entries.Count;
+            if (!_outbox.HasToken && localEntries == 0)
+            {
+                _deleteView.ShowResult("Nothing to delete. This app has no data on the server or on this device.");
+                return;
+            }
+
+            _deleteView.ShowConfirm(localEntries == 0
+                ? "Delete your data? This app's registration is removed from the server. This cannot be undone."
+                : "Delete your data? Your " + localEntries
+                    + " entries are removed from the server and from this device, including entries not sent yet. This cannot be undone.");
         }
 
         private void OnDeleteConfirmed()

@@ -33,12 +33,9 @@ namespace JournalStack.Client
             _closeButton.onClick.RemoveListener(Hide);
         }
 
-        // The count is of local entries, so the person sees what goes.
-        public void ShowConfirm(int localEntries)
+        public void ShowConfirm(string text)
         {
-            Show("Delete your data? Your " + localEntries
-                + " entries are removed from the server and from this device, including entries not sent yet. This cannot be undone.",
-                true, true);
+            Show(text, true, true);
             _closeButton.GetComponentInChildren<TMP_Text>().text = "Cancel";
         }
 
