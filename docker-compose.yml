@@ -1,4 +1,4 @@
-# Local stack: PostgreSQL, then `migrate`, then the server.
+# Local stack: PostgreSQL, then `migrate`, then the server and the admin app.
 # Needs a .env file (copy .env.example). Only PGPASSWORD must be set.
 services:
   db:
@@ -36,11 +36,24 @@ services:
     environment:
       <<: *dbenv
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  # The admin pages. They call the server's admin API and never the database.
+  # Without a key in .env the container exits with a clear message, and the device stack still runs.
+  admin:
+    build: ./admin
+    environment:
+      ADMIN_API_URL: http://server:8080
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+    ports:
+      - "127.0.0.1:8090:8080"
+    depends_on:
+      - server
 
 volumes:
   dbdata:

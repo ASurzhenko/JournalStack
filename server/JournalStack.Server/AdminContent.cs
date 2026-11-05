@@ -7,7 +7,7 @@ public record AdminTip(Guid Id, string Text, string Status, DateTime UpdatedAt);
 
 public record AdminEntry(Guid Id, Guid DeviceId, string Text, DateTime ClientCreatedAt, DateTime ReceivedAt);
 
-// The data the admin pages read and write. The SQL is the only place the admin touches the database.
+// The data the admin API reads and writes. The SQL is the only place the admin touches the database.
 public static class AdminContent
 {
     private const string TipColumns = "id, text, status, updated_at AS updatedat";
@@ -35,10 +35,10 @@ public static class AdminContent
         return tips.ToList();
     }
 
-    public static async Task CreateTip(NpgsqlDataSource db, string text, string status, CancellationToken cancel)
+    public static async Task<Guid> CreateTip(NpgsqlDataSource db, string text, string status, CancellationToken cancel)
     {
         await using var conn = await db.OpenConnectionAsync(cancel);
-        await conn.ExecuteAsync("INSERT INTO tips (text, status) VALUES (@text, @status)", new { text, status });
+        return await conn.ExecuteScalarAsync<Guid>("INSERT INTO tips (text, status) VALUES (@text, @status) RETURNING id", new { text, status });
     }
 
     // Last write wins. updated_at moves on every save, which is what makes a saved published tip the one devices get.

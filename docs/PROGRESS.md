@@ -2,7 +2,10 @@
 
 ## Now
 
-- Current slot: the minimal Unity client (slice B) is built on the branch `feat/unity-client`. Slots 0, 1, 2 slice A
+- Current work: the admin is split into its own app on the branch `feat/admin-app` (see "Admin app split" below):
+  252 server and admin tests pass, the mutation pass is done, the local stack was run. The owner's browser check and
+  the commit are still to do.
+- Earlier: the minimal Unity client (slice B) was built on the branch `feat/unity-client`. Slots 0, 1, 2 slice A
   (entries as text with the idempotency core), 3 (admin panel) and 3b (the admin front as Razor Pages) are in `main`.
   The client has 68 EditMode tests, all passing, and was run in Play mode against the local stack (see "Unity
   client" below). The caret check on a device is not done yet.
@@ -46,6 +49,81 @@ One line per session: date, focused minutes, slot, minutes to get started again.
 | 2026-10-28 | | chore (server to .NET 10 LTS) | |
 | 2026-10-30 | | D1 (delete my data) | |
 | 2026-11-03 | | D1 (Play checks, admin browser checks) | |
+| 2026-11-04 | | admin app split | |
+
+## Admin app split
+
+The admin pages are a separate program, `admin/JournalStack.AdminApp/`, that calls a new admin API on the server
+(D-033, D-034). Built on the branch `feat/admin-app`. Nothing on Railway was touched.
+
+What moved. The server lost its Razor Pages, its stylesheet, its cookie code, its Origin check and its content
+policy. It gained `/admin/api/...` behind a service key (`X-Admin-Key`) and the session token in `X-Admin-Session`.
+The password check, the lockout, the session table and all the SQL stayed on the server. The admin app holds the
+cookie, the Origin check, the content policy, the three pages and an `ApiClient` with one method per route. The
+device API and the migrations did not change. Two small settings were added: `ADMIN_API_KEY` on both services and
+`ADMIN_API_URL` on the admin app.
+
+Tests. The full run on the last pass: 252 passed, 0 failed (188 before). The new files are `AdminApiTests` (the
+server's admin API called directly) and `AdminAppTests` (the admin app end to end, through both hosts). The old
+`AdminAuthTests`, `AdminContentTests` and `AdminPageTests` were moved into those two. `AdminRulesTests` is unchanged
+and `FailureTests` has two admin tests instead of one.
+
+First build. The admin app's test host starts with the plan's wiring: `WebApplicationFactory<ApiClient>`, the
+required settings read after `Build()`, and the server's test handler as the primary handler of the admin app's
+client. N14's accepting row (both settings valid, the host starts) was the first admin-app test run, and it passed.
+Two things came out different from the plan. The generated `Program` class of the admin app is public with this SDK,
+so the test project saw two `Program` types. The admin app now declares `internal partial class Program`. And a
+stale static web assets manifest from the old server build made the server's test host look for a `wwwroot` folder
+that no longer exists. Deleting `bin` and `obj` of the server and the test project fixed it. No code change.
+
+N17. Npgsql reports the connect timeout to a non-routable host (10.255.255.1) as a transient error, so the server
+answers 503 `database_unavailable`. The answer came after about 5 seconds, between the 4 and 10 second bounds of the
+test. On a network that refuses that address at once the test fails and says so.
+
+Local stack. `docker compose up --build` started `db`, `migrate`, `server` and `admin`. With a throwaway key and a
+throwaway password that were never written to a file or printed:
+
+| Check | Result |
+|---|---|
+| admin `/health`, server `/health` | 200, 200 |
+| `POST /admin/api/login` without the key | 401 |
+| sign in through the admin app | 302 to `/admin`, cookie `HttpOnly`, `SameSite=Strict`, `Path=/admin` |
+| tips page, save a tip, tip in the list, entries page | 200, 302, found, 200 |
+| `scripts/smoke.ps1` on the server (published on 8081) | PASS, 10 `ok` lines |
+| `docker compose stop server`, reload a page | 503, and after `start server` the same cookie gives 200 |
+| `docker compose restart admin` | same cookie still gives 200 |
+| sign out, then the old cookie | 302, 302 |
+| a post with `Origin: http://evil.example` | 403 |
+| the key or the password in the admin or server log | 0 lines |
+
+The Data Protection warnings at startup now come from the admin app. The server log has none.
+
+Not run. The browser check of plan section 3.8 is the owner's. The caret check on a phone and everything on Railway
+are as before. The error page (plan step 7) was cut: the admin app answers failures with the JSON error body and its
+code (WHAT-CAN-GO-WRONG, failure 11), and test N18 does not exist.
+
+### Mutation pass, admin app split
+
+Each row: one edit to the code, the admin tests run, the result, then the edit undone. All 12 edits failed the named
+tests. The constant-time comparison of the key is not in this table: replacing `FixedTimeEquals` with a plain `==`
+accepts and refuses exactly the same inputs, so no test can fail on it. That property is checked by reading the code.
+
+| # | Edit | Tests that failed | Failed |
+|---|---|---|---|
+| M1 | the key check removed | Every_admin_route_without_the_key (N1), Keyless_logins_are_not_counted, Only_the_exact_key | yes |
+| M2 | `Trim()` before the key comparison | Only_the_exact_key_in_the_key_header_is_accepted (N2, space rows) | yes |
+| M3 | `OrdinalIgnoreCase` comparison of the key | Only_the_exact_key_in_the_key_header_is_accepted (N2, case row) | yes |
+| M4 | short-key rule removed | A_key_that_is_not_set_or_is_short_refuses_every_route (N3), A_short_key_makes_the_server_warn | yes |
+| M5 | `no-store` removed from the admin API | Every_answer_of_a_mapped_admin_route_is_not_cached (N5) | yes |
+| M6 | any 401 treated as signed out (instead of `session_invalid` only) | N11, N13, T2, the bad-login rows, the sixth-login test, Every_admin_answer_is_not_cached | yes |
+| M7 | sign-in page maps by status instead of by `code` | N11, N16, A_server_without_a_key_is_503, N13 | yes |
+| M8 | cookie cleared before the logout call | N12 | yes |
+| M9 | logout put back behind the session filter | N19, Logout_with_an_empty_unknown_or_expired_session_is_204, Logout_ends_the_session_for_good | yes |
+| M10 | lockout moved after the body read | The_lockout_answers_before_the_body_is_read (the D-019 proof) | yes |
+| M11 | timeout mapping removed | N9 | yes |
+| M12 | `Timeout = 5` removed | A_database_host_that_does_not_answer_gives_503_after_the_connect_timeout (N17) | yes |
+
+M2 and M3 fail only the key test that holds the space and case rows. The pass ran after a clean full run (252 of 252).
 
 ## Mutation pass, slice A
 

@@ -7,12 +7,14 @@ Local parts are proven and carry real numbers from [PROGRESS.md](PROGRESS.md). A
 run yet. Those places are marked **FILL AFTER DEPLOY** and get filled in from the first real run, never from a
 guess.
 
-Settings the server reads (names only, values are never in the repo, see `.env.example`):
+Settings the server and the admin app read (names only, values are never in the repo, see `.env.example`):
 
 | Name | What it is |
 |---|---|
 | `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | Database connection. The server stops at startup if one is missing (`Database.cs`). |
-| `ADMIN_PASSWORD_HASH` | Hash of the admin password. Without it the server runs and admin sign-in is off (`Program.cs`). |
+| `ADMIN_PASSWORD_HASH` | Hash of the admin password. Server only. Without it the server runs and admin sign-in is off (`Program.cs`). |
+| `ADMIN_API_KEY` | The service key. The same value on the server and on the admin app, 32 characters or more. Without a good key the server refuses every admin call, and the admin app does not start. |
+| `ADMIN_API_URL` | Admin app only. Where the server's admin API is. Locally `http://server:8080`, set in `docker-compose.yml`. |
 
 ## Contents
 
@@ -39,8 +41,9 @@ docker compose up --build
 
 This keeps the window busy and shows the server log. Run the smoke test below in a second PowerShell window.
 
-Compose runs `db`, then `migrate` (`dotnet JournalStack.Server.dll migrate`), then `server`. If `migrate` exits
-with an error, `server` does not start. Then check it:
+Compose runs `db`, then `migrate` (`dotnet JournalStack.Server.dll migrate`), then `server`, then `admin`. If
+`migrate` exits with an error, `server` does not start. The admin app is at `http://127.0.0.1:8090/admin`. Then check
+the server:
 
 ```powershell
 powershell -File scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8080
@@ -50,9 +53,10 @@ The last line must be `PASS`.
 
 ### Railway
 
-What is decided: one Railway service built from `server/Dockerfile`, one Railway PostgreSQL, the pre-deploy
-command `dotnet JournalStack.Server.dll migrate`, and the six variables above set as Railway service variables
-(D-003, D-004, D-006).
+What is decided: two Railway services, the server built from `server/Dockerfile` and the admin app built from
+`admin/Dockerfile`, one Railway PostgreSQL, the pre-deploy command `dotnet JournalStack.Server.dll migrate` on the
+server only, and the variables above set as Railway service variables (D-003, D-004, D-006, D-033). The admin app
+gets no database variables and no password hash.
 
 FILL AFTER DEPLOY: how a deploy is started (push to a branch, or `railway up`), which branch Railway watches, where
 the pre-deploy command is set, the health check path, and how long a deploy takes.
@@ -85,7 +89,7 @@ git checkout <previous-commit>
 docker compose up --build
 ```
 
-This keeps the window busy and shows the server log. Run any other command in a second PowerShell window.
+This keeps the window busy and shows the logs. Run any other command in a second PowerShell window.
 
 `migrate` then finds nothing new to run and the older server starts on the same database.
 
@@ -116,7 +120,13 @@ becomes `0005_add_entry_mood.sql` and is renamed before its first Railway run.
    `"\nmood=N"` only when a mood was sent. The hash format is frozen and only grows at the end (D-016), so an old
    app's retry of an old entry still matches its stored row.
 
-3. **Admin** (`server/JournalStack.Server/Pages/Admin/Entries.cshtml` and its `.cs` file). One more column.
+3. **Admin API** (`server/JournalStack.Server/AdminContent.cs`). `ListEntries` selects `mood`, and the `AdminEntry`
+   record gets one more property, `short? Mood`. The JSON from `GET /admin/api/entries` then carries `mood`.
+
+   **Admin app** (`admin/JournalStack.AdminApp/ApiClient.cs` and `Pages/Admin/Entries.cshtml`). Its own `AdminEntry`
+   record gets `short? Mood`, and the page gets one more column. Either side can go live first. An old admin app
+   ignores the new field. A new admin app against an old server reads it as empty. What to say on a call: the admin
+   app only shows what the API returns. The API added a field, and the admin app added a column.
 
 4. **App** (`Assets/Scripts/Data/Dtos.cs` and the composer). One field in the request, buttons 1 to 5. An older app
    does not send it, and the server accepts that.
@@ -293,21 +303,28 @@ Restore the dump taken before the demo (section 5). FILL AFTER DEPLOY: the steps
 
 ```powershell
 docker compose logs server
+docker compose logs admin
 docker compose logs migrate
 docker compose logs -f server
 ```
 
 What the server writes: on an unhandled error, the exception type and a request id. The same request id is in the
-error answer the caller got. It never writes entry text, tokens, cookies or passwords. Tests:
+error answer the caller got. It never writes entry text, tokens, cookies, passwords or the service key. The admin
+app writes the same kind of line. When the server fails on a call from the admin app, the admin app's answer is a
+502 that carries the server's request id, so one id finds the line in both logs. Tests:
 `Entry_text_appears_in_no_log_line_and_in_no_refusal` (`EntryTests`),
 `An_unhandled_exception_logs_its_type_and_a_request_id_but_not_its_message` and
 `A_failed_constraint_leaves_no_row_data_in_the_response_or_the_log` (`FailureTests`),
-`Neither_the_password_nor_the_token_nor_the_hash_nor_the_cookie_reach_the_log` (`AdminAuthTests`).
+`Neither_the_password_nor_the_token_nor_the_hash_nor_the_key_reach_the_server_log` (`AdminApiTests`),
+`Neither_the_password_nor_the_token_nor_the_hash_nor_the_cookie_nor_the_key_reach_either_log` and
+`N13_a_full_session_leaves_no_secret_in_the_admin_app_log` (`AdminAppTests`).
 
 Lines that are expected and harmless:
 
 - `ADMIN_PASSWORD_HASH is not set. Admin login is disabled.` when the hash is empty.
-- Two Data Protection warnings at startup: keys are kept in a folder inside the container and are not encrypted.
+- `ADMIN_API_KEY is not set or is shorter than 32 characters. The admin API is disabled.` when the key is missing or
+  short. The line names the variable and never its value.
+- Two Data Protection warnings at startup, in the admin app's log only: keys are kept in a folder inside the container and are not encrypted.
   No admin request depends on those keys ([PROGRESS.md](PROGRESS.md), "Startup log with Razor Pages").
 - `Cannot load library libgssapi_krb5.so.2` from `migrate` on every run. It does not change the exit code.
 
@@ -334,6 +351,28 @@ curl.exe -i http://127.0.0.1:8080/health/ready
 Tests for the 503 behaviour: `FailureTests`, for example
 `When_the_database_is_down_health_stays_up_and_ready_says_503` and
 `When_the_database_is_down_an_entry_post_answers_503_and_never_2xx`.
+
+The admin app has its own `/health`. It answers 200 without calling the server, so an admin deploy never fails
+because the server is down. Use the server's `/health/ready` to look at the database.
+
+What the person at the admin sees, and what it means. Only the first row signs the person out.
+
+| What is shown | Status | Meaning | Next step |
+|---|---|---|---|
+| The sign-in page | 302 | The session ended: it is 8 hours old, or the password hash changed | Sign in again |
+| "The database is not reachable. Try again later." | 503 `database_unavailable` | The server is up and the database is not | Database first. The person stays signed in |
+| "The server cannot be reached. Try again later." | 503 `api_unreachable` | The admin app cannot reach the server: it is stopped, or `ADMIN_API_URL` is wrong | `docker compose ps`, then the server log |
+| "The server did not answer in time. A save may or may not have happened; check the list." | 504 `api_timeout` | The server took more than 10 seconds | Check the list before saving again |
+| "Something went wrong on the server." with a request id | 502 `api_error` | The server failed on this call | Look for the request id in `docker compose logs server` |
+| "The admin app is not set up to call the server." | 502 `admin_key_refused` | `ADMIN_API_KEY` differs between the admin app and the server | Section 9, service key |
+| "The server has no admin key set." | 503 `admin_key_not_configured` | `ADMIN_API_KEY` is missing or shorter than 32 characters on the server | Set it on the server (section 9) |
+| Sign-in page: "Admin login is not set up on this server." | 503 `admin_not_configured` | `ADMIN_PASSWORD_HASH` is missing on the server | Set it on the server (section 9) |
+
+The two "not set up" answers name different variables: `admin_not_configured` is the password hash,
+`admin_key_not_configured` is the service key.
+
+Tests: `N8` to `N12`, `N16` and `N19` in `AdminAppTests`, and the two admin tests in `FailureTests`. The answers are
+JSON for now, with the codes above.
 
 ### Local
 
@@ -369,7 +408,25 @@ what the app sees during a restart.
    Railway: FILL AFTER DEPLOY (set the service variable, how the service restarts).
 
 A new hash ends every admin session at once, because each stored session is a keyed hash of the token with the
-password hash as the key (D-020). Test: `A_new_password_hash_ends_every_old_session` (`AdminAuthTests`).
+password hash as the key (D-020). Test: `A_new_password_hash_ends_every_old_session` (`AdminApiTests`).
+
+### Service key
+
+The key sits between the admin app and the server (D-034). Both need the same value, 32 characters or more.
+
+1. Make a new key. The command prints it. Copy it straight into the place that needs it and clear the clipboard.
+
+   ```powershell
+   $bytes = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes); [Convert]::ToBase64String($bytes)
+   ```
+
+2. Local: put the value into `.env` as `ADMIN_API_KEY` and restart both services: `docker compose up -d`.
+   Railway: FILL AFTER DEPLOY (set it on the server; the admin service reads it by reference, and is redeployed
+   after the change instead of trusting that a changed reference redeploys it).
+
+Sessions stay valid, because the key is not part of the session hash. Until both services have the new value, every
+admin page answers 502 `admin_key_refused` or 503 `admin_key_not_configured`. A short key on the server stops the
+admin API completely, and the server log says so by variable name.
 
 ### Database password
 

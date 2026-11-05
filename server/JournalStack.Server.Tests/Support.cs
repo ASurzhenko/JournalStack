@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Net.Sockets;
+using JournalStack.AdminApp;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -245,36 +246,63 @@ public sealed class TestApp : WebApplicationFactory<Program>
     public const string AdminTestPassword = "correct horse battery staple";
     public static readonly string AdminTestHash = Admin.HashPassword(AdminTestPassword);
 
-    public static async Task<TestApp> StartAdminAsync(PostgresFixture db, string? hash = null)
+    // 32 characters, the shortest key the server accepts.
+    public const string AdminTestKey = "test-service-key-0123456789abcdef";
+
+    public static async Task<TestApp> StartAdminAsync(PostgresFixture db, string? hash = null, string? key = AdminTestKey)
     {
         var settings = await db.NewDatabaseAsync();
         settings["ADMIN_PASSWORD_HASH"] = hash ?? AdminTestHash;
+        settings["ADMIN_API_KEY"] = key;
         return new TestApp(settings);
     }
 
-    public const string TestOrigin = "http://localhost";
+    private AdminAppHost? _admin;
 
-    // The client keeps no cookies and follows no redirects, so a test sees exactly what the server sent.
-    // TestServer takes the Host from the request address, so the default Origin is the server's own. null sends none.
-    public HttpClient AdminClient(string? session = null, string? origin = TestOrigin)
+    // The admin app wired to this server, with the key the server was started with.
+    public AdminAppHost AdminHost => _admin ??= new AdminAppHost(this);
+
+    public override async ValueTask DisposeAsync()
     {
-        var client = CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false, AllowAutoRedirect = false });
-        if (origin is not null)
+        if (_admin is not null)
         {
-            client.DefaultRequestHeaders.Add("Origin", origin);
+            await _admin.DisposeAsync();
+        }
+        await base.DisposeAsync();
+    }
+
+    // The admin pages, reached through the admin app.
+    public HttpClient AdminClient(string? session = null, string? origin = AdminAppHost.TestOrigin)
+    {
+        return AdminHost.AdminClient(session, origin);
+    }
+
+    public Task<string> LoginAsync(string password = AdminTestPassword)
+    {
+        return AdminHost.LoginAsync(password);
+    }
+
+    // The admin API, called directly the way the admin app calls it. A null key or session sends no header.
+    public HttpClient AdminApi(string? key = AdminTestKey, string? session = null)
+    {
+        var client = CreateClient();
+        if (key is not null)
+        {
+            client.DefaultRequestHeaders.Add(JournalStack.Server.Admin.KeyHeader, key);
         }
         if (session is not null)
         {
-            client.DefaultRequestHeaders.Add("Cookie", $"{Admin.CookieName}={session}");
+            client.DefaultRequestHeaders.Add(JournalStack.Server.Admin.SessionHeader, session);
         }
         return client;
     }
 
-    public async Task<string> LoginAsync(string password = AdminTestPassword)
+    public async Task<string> ApiLoginAsync(string password = AdminTestPassword)
     {
-        var response = await AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", password)));
-        Assert.Equal(System.Net.HttpStatusCode.Redirect, response.StatusCode);
-        return AdminRequests.CookieValue(response)!;
+        var response = await AdminApi().PostAsync("/admin/api/login", AdminRequests.Json(new { password }));
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        return json.GetProperty("token").GetString()!;
     }
 
     public async Task<int> CountAsync(string table)
@@ -316,7 +344,7 @@ public static class AdminRequests
     public static string? CookieValue(HttpResponseMessage response)
     {
         var line = SetCookie(response);
-        return line?.Split(';')[0][(Admin.CookieName.Length + 1)..];
+        return line?.Split(';')[0][(JournalStack.AdminApp.Gate.CookieName.Length + 1)..];
     }
 
     public static string? SetCookie(HttpResponseMessage response)
@@ -382,5 +410,91 @@ public sealed class DeclaredLengthContent : HttpContent
     {
         length = _declared;
         return true;
+    }
+}
+
+// The admin app on its own test host. Its API client talks to the server's test host, so a call goes through both.
+// A handler or a timeout can be given to stand in for a server that is down, slow or broken.
+public sealed class AdminAppHost : WebApplicationFactory<ApiClient>
+{
+    public const string TestOrigin = "http://localhost";
+
+    private readonly TestApp _server;
+    private readonly HttpMessageHandler? _handler;
+    private readonly TimeSpan? _timeout;
+    private readonly Dictionary<string, string?> _settings;
+
+    public LogCapture Logs { get; } = new();
+
+    public AdminAppHost(TestApp server, string? key = TestApp.AdminTestKey, HttpMessageHandler? handler = null, TimeSpan? timeout = null, string? url = "http://localhost")
+    {
+        _server = server;
+        _handler = handler;
+        _timeout = timeout;
+        _settings = new Dictionary<string, string?> { ["ADMIN_API_URL"] = url, ["ADMIN_API_KEY"] = key };
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(_settings));
+        builder.ConfigureServices(services =>
+        {
+            var client = services.AddHttpClient<ApiClient>()
+                .ConfigurePrimaryHttpMessageHandler(() => _handler ?? _server.Server.CreateHandler());
+            if (_timeout is { } timeout)
+            {
+                client.ConfigureHttpClient(http => http.Timeout = timeout);
+            }
+        });
+        builder.ConfigureLogging(logging => logging.AddProvider(Logs));
+    }
+
+    // The client keeps no cookies and follows no redirects, so a test sees exactly what the admin app sent.
+    // TestServer takes the Host from the request address, so the default Origin is the app's own. null sends none.
+    public HttpClient AdminClient(string? session = null, string? origin = TestOrigin)
+    {
+        var client = CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false, AllowAutoRedirect = false });
+        if (origin is not null)
+        {
+            client.DefaultRequestHeaders.Add("Origin", origin);
+        }
+        if (session is not null)
+        {
+            client.DefaultRequestHeaders.Add("Cookie", $"{Gate.CookieName}={session}");
+        }
+        return client;
+    }
+
+    public async Task<string> LoginAsync(string password = TestApp.AdminTestPassword)
+    {
+        var response = await AdminClient().PostAsync("/admin/login", AdminRequests.Form(("password", password)));
+        Assert.Equal(System.Net.HttpStatusCode.Redirect, response.StatusCode);
+        return AdminRequests.CookieValue(response)!;
+    }
+}
+
+// Every failure test of the admin app reads the error code through this one helper.
+public static class AdminErrors
+{
+    public static async Task<string?> CodeAsync(HttpResponseMessage response)
+    {
+        var json = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        return json.GetProperty("code").GetString();
+    }
+}
+
+// Stands in for a server that is down, slow or broken.
+public sealed class FakeHandler : HttpMessageHandler
+{
+    private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _send;
+
+    public FakeHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send)
+    {
+        _send = send;
+    }
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancel)
+    {
+        return _send(request, cancel);
     }
 }
