@@ -1,7 +1,5 @@
 using JournalStack.Server;
-using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
-using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 
 // `migrate` applies pending database scripts and exits. Railway and compose run it before the server starts.
@@ -22,12 +20,6 @@ builder.Services.AddSingleton(sp => NpgsqlDataSource.Create(Database.ConnectionS
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Limits>();
 
-// The built-in antiforgery token would die with the key ring on every deploy. Admin POSTs are guarded by the Origin check in Admin.Map.
-builder.Services.AddRazorPages(options => options.Conventions.ConfigureFilter(new IgnoreAntiforgeryTokenAttribute()));
-
-// A form value over the entry body limit is refused. The limit is the same one the entry text uses.
-builder.Services.Configure<FormOptions>(options => options.ValueLengthLimit = Entries.BodyLimit);
-
 var app = builder.Build();
 
 // Stop at startup, not at the first request, when a PG variable is missing.
@@ -37,6 +29,12 @@ app.Services.GetRequiredService<NpgsqlDataSource>();
 if (string.IsNullOrEmpty(app.Configuration["ADMIN_PASSWORD_HASH"]))
 {
     app.Logger.LogWarning("ADMIN_PASSWORD_HASH is not set. Admin login is disabled.");
+}
+
+// Same for the service key. Without it every admin API route answers 503. The warning names the variable, never a value.
+if (!Admin.KeyIsSet(app.Configuration["ADMIN_API_KEY"]))
+{
+    app.Logger.LogWarning("ADMIN_API_KEY is not set or is shorter than {MinLength} characters. The admin API is disabled.", Admin.MinKeyLength);
 }
 
 // Railway ends TLS in front of the server. Only the scheme is read from the proxy, never the client address.
@@ -68,16 +66,6 @@ app.Use(async (context, next) =>
             : Problems.Create(500, "server_error", "Something went wrong on the server.", requestId);
         await result.ExecuteAsync(context);
     }
-});
-
-app.UseStaticFiles(new StaticFileOptions
-{
-    // The admin stylesheet is the only static file. It may not be framed and is re-checked on every visit.
-    OnPrepareResponse = context =>
-    {
-        context.Context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; frame-ancestors 'none'";
-        context.Context.Response.Headers.CacheControl = "no-cache";
-    },
 });
 
 Api.Map(app);
