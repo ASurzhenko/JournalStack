@@ -115,10 +115,13 @@ docker-compose.override.yml
 *.dump
 server/**/bin
 server/**/obj
+admin/**/bin
+admin/**/obj
 
 # Unity ignores all csproj/sln; the server projects are real source
 !server/**/*.csproj
 !server/**/*.sln
+!admin/**/*.csproj
 
 # Crash dumps from the shell
 *.stackdump
