@@ -381,8 +381,9 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
   holds no database connection and no password hash. It asks the server's admin API (`/admin/api/...`) for
   everything: sign in, sign out, tips, entries. The server keeps the password check, the lockout, the session table
   and all the SQL. The browser talks only to the admin app. The device API does not change.
-- Why: The admin should use the API the same way the app does. A fault in the admin pages cannot reach the
-  database, because the admin app has no way to open a connection.
+- Why: I wanted the admin to go through the same server as the phone app. The admin app has no database connection
+  of its own, so even if someone breaks into it, they still have to go through the API. It's one more service for
+  me to run, but the server is the only place that talks to the database.
 - Cost: One more service and one more hop to configure and watch. The two small records for tips and entries are
   written on both sides of the hop. Typed text is still lost when a save fails. A failed call can now fail in more
   ways, and each one has its own answer (WHAT-CAN-GO-WRONG, failure 11).
@@ -397,8 +398,10 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
   checked or any attempt is counted. A key that is missing or shorter than 32 characters counts as not set, and the
   server then refuses every admin route with its own code. The password check and the session stay on the server,
   so a redeploy of either service does not sign the admin out.
-- Why: The server's address is public because the app needs it. Without the key anyone who finds the address could
-  try the admin routes. With the key a stranger gets 401 on every one of them.
+- Why: The API has to be public so the phone app can reach it. Anyone can try calling the admin routes, so the
+  admin app sends a secret key with every request. Only the admin app and the API server know the key. If it's
+  missing or wrong, the server returns a 401. The admin app also forwards my session. The API server checks my
+  password and stores the session, so I stay logged in when I redeploy either service.
 - Cost: One more secret to keep and rotate. The admin sign-in page is still public, so the cost in D-019 stays: a
   stranger can use up the five attempts a minute through it. The hop between the two services is plain HTTP on the
   private network. Whether Railway's private network encrypts the traffic has not been checked.
