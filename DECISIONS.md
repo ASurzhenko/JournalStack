@@ -71,8 +71,9 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
 
 ## D-008 A stored admin session instead of a framework cookie
 
-- Status: in use from slot 3.
-- Choice: Login creates a random token. Only its hash is stored in `admin_sessions`.
+- Status: in use from slot 3. Since D-033 the admin app holds the cookie and the server holds the row.
+- Choice: Login creates a random token on the server. Only its hash is stored in `admin_sessions`. The admin app
+  puts the token in a browser cookie and sends it to the server with every call.
 - Why: The framework cookie has the same key problem as the form tokens in D-021. The keys disappear on every
   deploy, which would log me out each time. My session is stored in the database, so it survives a redeploy.
 - Cost: One more table and about 30 lines of code.
@@ -82,8 +83,8 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
 
 - Status: in use from slot 1.
 - Choice: CORS is not configured.
-- Why: The Unity app isn't a web page, and the admin pages come from the same server. No other site needs to call
-  it.
+- Why: The Unity app isn't a web page, and the browser only talks to the admin app. The admin app calls the server
+  from server to server, so CORS never applies. No other site needs to call either one.
 - Cost: A browser app on another origin could not call the API.
 - Revisit if: A web client on another origin is added.
 
@@ -176,26 +177,29 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
   cannot be found gives a 500 instead of a dedicated code.
 - Revisit if: Real usage shows up, there is more than one replica, or the admin needs sane dates.
 
-## D-018 Admin pages are Razor Pages in the server project, with a content policy
+## D-018 Admin pages are Razor Pages in the admin app, with a content policy
 
-- Status: in use from slot 3b.
-- Choice: The admin is three pages (sign in, tips, entries) rendered by the server, in the server project. There
-  is no JavaScript. The framework encodes every piece of text it writes. Every admin answer carries
+- Status: in use from slot 3b. The pages moved to the admin app in D-033.
+- Choice: The admin is three pages (sign in, tips, entries) rendered by the admin app. There is no JavaScript. The framework encodes every piece of text it writes. Every admin answer carries
   `Cache-Control: no-store` and the policy `default-src 'self'; frame-ancestors 'none'; form-action 'self'`.
 - Why: Entry text comes from phones and I show it in the admin. The pages encode all text and the browser is told
   not to run inline scripts. If an entry looks like a script, it just shows up as text.
-- Cost: The pages live in the server project. A page that needs inline script or a file from another site cannot
+- Cost: The pages live in the admin app project. A page that needs inline script or a file from another site cannot
   be added without loosening the policy.
 - Revisit if: The admin needs something a plain form cannot do.
 
 ## D-019 Admin login limit
 
-- Status: in use from slot 3.
-- Choice: 5 login attempts a minute for the whole server. A right password counts as an attempt too. The count is
-  taken before the form is read.
+- Status: in use from slot 3. Since D-033 the counter is on the server, and the admin app forwards every attempt.
+- Choice: 5 login attempts a minute for the whole server. A right password counts as an attempt too. The server
+  takes the count before it reads the body.
 - Why: There's only one admin, me. Five tries per minute is plenty for me and slows down a script guessing
-  passwords. The counter goes up before the form is read, so a huge request can't get around the limit.
+  passwords. The counter goes up before the server reads the body, so a huge request can't get around the limit.
+  The admin app reads the form first, because it has to forward the password, and it checks no password itself.
+  Its 16 KiB form limit is not the protection. The counter on the server is.
 - Cost: Someone who keeps failing locks the real admin out until the minute is over. The count resets on deploy.
+  Through the admin app a huge sixth form is a 500 from the form limit and not a 429. At the server a huge sixth
+  body is still a 429.
 - Revisit if: There is more than one admin or more than one replica.
 
 ## D-020 Admin sessions: keyed hash, 8 hours, no renewal, no cleanup
@@ -210,10 +214,11 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
 
 ## D-021 No antiforgery tokens: SameSite=Strict plus an Origin check
 
-- Status: in use from slot 3b. Replaces D-007.
+- Status: in use from slot 3b. Replaces D-007. The check lives in the admin app since D-033.
 - Choice: The session cookie is `SameSite=Strict`. Every admin POST must carry an `Origin` header whose host equals
-  the server's own host, or it is refused with 403 before any page runs. A GET never changes data. The framework's
-  own antiforgery token is switched off in one line in `Program.cs`.
+  the admin app's own host, or it is refused with 403 before any page runs. A GET never changes data. The
+  framework's own antiforgery token is switched off in one line in the admin app's `Program.cs`. The server's admin
+  API needs no such check, because a browser cannot call it without the service key (D-034).
 - Why: Standard form tokens depend on keys that live inside the container, and every deploy loses them. A form
   opened before a deploy would then fail on Save, which is an annoying thing to run into during a live change. Here
   I use a strict cookie and check that the request came from my own site, without depending on those keys.
@@ -226,7 +231,7 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
 
 ## D-022 The admin reads and writes through the server's data code, with no admin JSON API
 
-- Status: in use from slot 3b.
+- Status: replaced by D-033.
 - Choice: The admin panel is a layer inside the server. It reads and writes through the same data code the API
   uses, and the browser never talks to the database. The device path is still API to database: a phone posts an
   entry to `/api/v1/entries` and the server writes the SQL.
@@ -368,3 +373,33 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
   data. The delete counts against the 600 requests an hour like any call. A registration that finished just after
   the person confirmed leaves an empty device row. Server backups taken before the delete still hold the entries.
 - Revisit if: Real people use it (backups, an audit record of deletions).
+
+## D-033 The admin is its own app and a client of the API
+
+- Status: in use from the admin app split.
+- Choice: The admin pages are a separate program, `admin/JournalStack.AdminApp/`, with its own Docker image. It
+  holds no database connection and no password hash. It asks the server's admin API (`/admin/api/...`) for
+  everything: sign in, sign out, tips, entries. The server keeps the password check, the lockout, the session table
+  and all the SQL. The browser talks only to the admin app. The device API does not change.
+- Why: The admin should use the API the same way the app does. A fault in the admin pages cannot reach the
+  database, because the admin app has no way to open a connection.
+- Cost: One more service and one more hop to configure and watch. The two small records for tips and entries are
+  written on both sides of the hop. Typed text is still lost when a save fails. A failed call can now fail in more
+  ways, and each one has its own answer (WHAT-CAN-GO-WRONG, failure 11).
+- Revisit if: The admin needs data the API does not offer.
+
+## D-034 The admin app proves itself with a service key and passes the session through
+
+- Status: in use from the admin app split.
+- Choice: Every call from the admin app to the server carries `X-Admin-Key`, a shared secret of 32 characters or
+  more, in the `ADMIN_API_KEY` variable on both services. Calls after sign-in also carry the session token in
+  `X-Admin-Session`. The server checks the key first on every admin route, in constant time, before any password is
+  checked or any attempt is counted. A key that is missing or shorter than 32 characters counts as not set, and the
+  server then refuses every admin route with its own code. The password check and the session stay on the server,
+  so a redeploy of either service does not sign the admin out.
+- Why: The server's address is public because the app needs it. Without the key anyone who finds the address could
+  try the admin routes. With the key a stranger gets 401 on every one of them.
+- Cost: One more secret to keep and rotate. The admin sign-in page is still public, so the cost in D-019 stays: a
+  stranger can use up the five attempts a minute through it. The hop between the two services is plain HTTP on the
+  private network. Whether Railway's private network encrypts the traffic has not been checked.
+- Revisit if: The admin API gets a second caller, or the private hop has to be encrypted.
