@@ -23,6 +23,7 @@ namespace JournalStack.Client
         public string Token => _state.token;
         public bool HasToken => !string.IsNullOrEmpty(_state.token);
         public IReadOnlyList<LocalEntry> Entries => _state.entries;
+        public bool DeleteRequested => _state.deleteRequested;
 
         public int Count(SyncState state)
         {
@@ -133,6 +134,38 @@ namespace JournalStack.Client
             {
                 SaveOrWarn();
             }
+        }
+
+        // Saved before the request leaves. If the save fails the flag is taken back, so memory and file agree.
+        public bool MarkDeleteRequested(out string error)
+        {
+            _state.deleteRequested = true;
+            if (Save(out error))
+            {
+                return true;
+            }
+
+            _state.deleteRequested = false;
+            return false;
+        }
+
+        // The server refused the delete, so nothing was deleted and normal sync goes on. False when the file could not
+        // be written, so the file may still hold the flag; the caller says the save failed and promises nothing more.
+        public bool CancelDelete(out string error)
+        {
+            _state.deleteRequested = false;
+            return Save(out error);
+        }
+
+        // The server confirmed. Token, device id, entries and the flag all go. If the save fails the file still holds
+        // the flag, and the next start sends the delete again, gets 401 and clears again.
+        public bool Clear(out string error)
+        {
+            _state.deviceId = null;
+            _state.token = null;
+            _state.entries.Clear();
+            _state.deleteRequested = false;
+            return Save(out error);
         }
 
         private bool Save(out string error)

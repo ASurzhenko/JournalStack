@@ -41,7 +41,7 @@ namespace JournalStack.Client.Tests
         [Test]
         public void RoundTripKeepsEveryField()
         {
-            var state = new LocalState { deviceId = "d", token = "t" };
+            var state = new LocalState { deviceId = "d", token = "t", deleteRequested = true };
             state.entries.Add(new LocalEntry { id = "i", text = "line1\nline2 é", clientCreatedAt = "c", state = SyncState.Failed, reason = "r" });
             Assert.IsTrue(StateFile.Save(_path, state, out _));
             LocalState back = StateFile.Load(_path, out string warning);
@@ -51,6 +51,19 @@ namespace JournalStack.Client.Tests
             Assert.AreEqual("line1\nline2 é", back.entries[0].text);
             Assert.AreEqual(SyncState.Failed, back.entries[0].state);
             Assert.AreEqual("r", back.entries[0].reason);
+            Assert.IsTrue(back.deleteRequested);
+        }
+
+        [Test]
+        public void AnOldStateFileWithoutTheFlagLoadsAsNotRequested()
+        {
+            // Fixtures.RealState was captured before the flag existed, so it has no deleteRequested key.
+            File.WriteAllText(_path, Fixtures.RealState);
+            LocalState state = StateFile.Load(_path, out string warning);
+            Assert.IsNull(warning);
+            Assert.IsFalse(state.deleteRequested);
+            Assert.AreEqual(2, state.entries.Count);
+            Assert.AreEqual(43, state.token.Length);
         }
 
         [Test]

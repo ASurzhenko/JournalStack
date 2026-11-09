@@ -15,6 +15,10 @@ public static class Database
             Database = Required(config, "PGDATABASE"),
             // PostgreSQL puts "Failing row contains (...)" into constraint errors. Entry text must not reach exceptions or logs.
             IncludeErrorDetail = false,
+            // Opening a new connection to a host that does not answer gives up after 5 seconds.
+            // This must stay below the admin app's 10 second client timeout, or a database that stops answering
+            // shows as 504 in the admin instead of 503. The default is 15.
+            Timeout = 5,
         };
         return builder.ConnectionString;
     }

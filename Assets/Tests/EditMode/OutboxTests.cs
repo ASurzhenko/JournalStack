@@ -174,6 +174,71 @@ namespace JournalStack.Client.Tests
         }
 
         [Test]
+        public void MarkDeleteRequestedIsOnDiskBeforeItReturns()
+        {
+            var box = new Outbox(_path);
+            box.SetDevice("dev-1", new string('t', 43));
+            Add(box);
+            Assert.IsTrue(box.MarkDeleteRequested(out _));
+            var reloaded = new Outbox(_path);
+            Assert.IsTrue(reloaded.DeleteRequested);
+            Assert.AreEqual(43, reloaded.Token.Length);
+            Assert.AreEqual(1, reloaded.Entries.Count);
+        }
+
+        [Test]
+        public void AFailingSaveLeavesDeleteNotRequested()
+        {
+            var box = new Outbox(Path.Combine(_dir, "missing-folder", "state.json"));
+            Assert.IsFalse(box.MarkDeleteRequested(out string error));
+            Assert.IsNotEmpty(error);
+            Assert.IsFalse(box.DeleteRequested);
+        }
+
+        [Test]
+        public void ClearRemovesTokenDeviceEntriesAndTheFlagOnDisk()
+        {
+            var box = new Outbox(_path);
+            box.SetDevice("dev-1", new string('t', 43));
+            Add(box);
+            Assert.IsTrue(box.MarkDeleteRequested(out _));
+            Assert.IsTrue(box.Clear(out _));
+            var reloaded = new Outbox(_path);
+            Assert.IsTrue(string.IsNullOrEmpty(reloaded.Token));
+            Assert.IsTrue(string.IsNullOrEmpty(reloaded.DeviceId));
+            Assert.AreEqual(0, reloaded.Entries.Count);
+            Assert.IsFalse(reloaded.DeleteRequested);
+            Assert.IsFalse(reloaded.HasToken);
+        }
+
+        [Test]
+        public void CancelDeleteKeepsTokenAndEntries()
+        {
+            var box = new Outbox(_path);
+            box.SetDevice("dev-1", new string('t', 43));
+            string id = Add(box);
+            Assert.IsTrue(box.MarkDeleteRequested(out _));
+            Assert.IsTrue(box.CancelDelete(out _));
+            var reloaded = new Outbox(_path);
+            Assert.IsFalse(reloaded.DeleteRequested);
+            Assert.AreEqual(43, reloaded.Token.Length);
+            Assert.AreEqual(1, reloaded.Entries.Count);
+            Assert.AreEqual(id, reloaded.Entries[0].id);
+        }
+
+        [Test]
+        public void ACancelThatCannotSaveSaysSo()
+        {
+            string folder = Path.Combine(_dir, "sub");
+            Directory.CreateDirectory(folder);
+            var box = new Outbox(Path.Combine(folder, "state.json"));
+            Assert.IsTrue(box.MarkDeleteRequested(out _));
+            Directory.Delete(folder, true);
+            Assert.IsFalse(box.CancelDelete(out string error));
+            Assert.IsNotEmpty(error);
+        }
+
+        [Test]
         public void CountsFollowTheStates()
         {
             var box = new Outbox(_path);

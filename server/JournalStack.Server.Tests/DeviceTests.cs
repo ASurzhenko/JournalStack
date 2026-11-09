@@ -175,6 +175,186 @@ public class DeviceTests
         Assert.DoesNotContain("203.0.113.9", body);
     }
 
+    private static async Task<int> CountForAsync(TestApp app, string table, string column, Guid deviceId)
+    {
+        await using var conn = await PostgresFixture.OpenAsync(app.Settings);
+        return await conn.ExecuteScalarAsync<int>($"SELECT count(*) FROM {table} WHERE {column} = @deviceId", new { deviceId });
+    }
+
+    private static async Task PostNewEntryAsync(HttpClient client, string text)
+    {
+        var body = EntryRequests.Body(Guid.NewGuid().ToString(), text, EntryRequests.GoldenCreatedAt);
+        Assert.Equal(HttpStatusCode.Created, (await client.PostEntryAsync(body)).StatusCode);
+    }
+
+    private static async Task AssertProblemAsync(HttpResponseMessage response, HttpStatusCode status, string code)
+    {
+        Assert.Equal(status, response.StatusCode);
+        Assert.Equal(code, (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Delete_me_answers_204_and_removes_this_device_and_its_entries_only()
+    {
+        await using var app = await TestApp.StartAsync(_db);
+        var (idA, tokenA) = await app.RegisterAsync();
+        var (idB, tokenB) = await app.RegisterAsync();
+        var a = app.ClientFor(tokenA);
+        var b = app.ClientFor(tokenB);
+        await PostNewEntryAsync(a, "ENTRYMARKER-A one");
+        await PostNewEntryAsync(a, "ENTRYMARKER-A two");
+        await PostNewEntryAsync(b, "entry of B");
+
+        var response = await a.DeleteAsync("/api/v1/devices/me");
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal("", await response.Content.ReadAsStringAsync());
+        Assert.Equal(0, await CountForAsync(app, "devices", "id", idA));
+        Assert.Equal(0, await CountForAsync(app, "entries", "device_id", idA));
+        Assert.Equal(1, await CountForAsync(app, "devices", "id", idB));
+        Assert.Equal(1, await CountForAsync(app, "entries", "device_id", idB));
+        Assert.DoesNotContain(tokenA, app.Logs.All);
+        Assert.DoesNotContain("ENTRYMARKER-A", app.Logs.All);
+    }
+
+    [Fact]
+    public async Task After_delete_the_old_token_gets_401_on_every_route_and_stores_nothing()
+    {
+        await using var app = await TestApp.StartAsync(_db);
+        var (_, token) = await app.RegisterAsync();
+        var client = app.ClientFor(token);
+        await PostNewEntryAsync(client, "before the delete");
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync("/api/v1/devices/me")).StatusCode);
+
+        await AssertProblemAsync(await client.GetAsync("/api/v1/tip/today"), HttpStatusCode.Unauthorized, "unauthorized");
+        await AssertProblemAsync(await client.GetAsync("/api/v1/entries"), HttpStatusCode.Unauthorized, "unauthorized");
+        await AssertProblemAsync(await client.PostEntryAsync(EntryRequests.Golden()), HttpStatusCode.Unauthorized, "unauthorized");
+        await AssertProblemAsync(await client.DeleteAsync("/api/v1/devices/me"), HttpStatusCode.Unauthorized, "unauthorized");
+        Assert.Equal(0, await app.CountAsync("entries"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("Basic dXNlcjpwYXNz")]
+    [InlineData("Bearer short")]
+    [InlineData("Bearer abcdefghijklmnopqrstuvwxyzabcdefghijklmnopq")]
+    public async Task Delete_without_a_token_or_with_a_wrong_one_answers_401_and_deletes_nothing(string? header)
+    {
+        await using var app = await TestApp.StartAsync(_db);
+        var (_, token) = await app.RegisterAsync();
+        await PostNewEntryAsync(app.ClientFor(token), "must survive");
+        var client = app.CreateClient();
+        if (header is not null)
+        {
+            client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", header);
+        }
+
+        await AssertProblemAsync(await client.DeleteAsync("/api/v1/devices/me"), HttpStatusCode.Unauthorized, "unauthorized");
+
+        Assert.Equal(1, await app.CountAsync("devices"));
+        Assert.Equal(1, await app.CountAsync("entries"));
+    }
+
+    [Fact]
+    public async Task After_delete_an_old_entry_id_is_free_so_only_the_app_can_stop_a_resend()
+    {
+        await using var app = await TestApp.StartAsync(_db);
+        var (_, tokenA) = await app.RegisterAsync();
+        var (idC, tokenC) = await app.RegisterAsync();
+        var a = app.ClientFor(tokenA);
+        Assert.Equal(HttpStatusCode.Created, (await a.PostEntryAsync(EntryRequests.Golden())).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await a.DeleteAsync("/api/v1/devices/me")).StatusCode);
+
+        var again = await app.ClientFor(tokenC).PostEntryAsync(EntryRequests.Golden());
+
+        Assert.Equal(HttpStatusCode.Created, again.StatusCode);
+        Assert.Equal(1, await app.CountAsync("entries"));
+        Assert.Equal(1, await CountForAsync(app, "entries", "device_id", idC));
+    }
+
+    [Fact]
+    public async Task When_the_delete_fails_inside_the_handler_the_answer_is_500_and_nothing_is_deleted()
+    {
+        await using var app = await TestApp.StartAsync(_db);
+        var (deviceId, token) = await app.RegisterAsync();
+        var client = app.ClientFor(token);
+        await PostNewEntryAsync(client, "must survive");
+        await using (var conn = await PostgresFixture.OpenAsync(app.Settings))
+        {
+            await conn.ExecuteAsync(
+                "CREATE FUNCTION refuse_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'DELETEMARKER'; END $$");
+            await conn.ExecuteAsync("CREATE TRIGGER refuse BEFORE DELETE ON devices FOR EACH ROW EXECUTE FUNCTION refuse_delete()");
+        }
+
+        var response = await client.DeleteAsync("/api/v1/devices/me");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal("server_error", JsonDocument.Parse(body).RootElement.GetProperty("code").GetString());
+        Assert.DoesNotContain("DELETEMARKER", body);
+        Assert.DoesNotContain("DELETEMARKER", app.Logs.All);
+        Assert.Equal(1, await CountForAsync(app, "devices", "id", deviceId));
+        Assert.Equal(1, await CountForAsync(app, "entries", "device_id", deviceId));
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/entries")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Two_deletes_at_once_give_no_server_error_and_the_device_is_gone()
+    {
+        await using var app = await TestApp.StartAsync(_db);
+        var (deviceId, token) = await app.RegisterAsync();
+        var client = app.ClientFor(token);
+        await PostNewEntryAsync(client, "to be deleted");
+
+        var responses = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => client.DeleteAsync("/api/v1/devices/me")));
+        var codes = responses.Select(r => r.StatusCode).ToArray();
+
+        Assert.All(codes, code => Assert.True(code == HttpStatusCode.NoContent || code == HttpStatusCode.Unauthorized, code.ToString()));
+        Assert.Contains(HttpStatusCode.NoContent, codes);
+        Assert.Equal(0, await CountForAsync(app, "devices", "id", deviceId));
+        Assert.Equal(0, await CountForAsync(app, "entries", "device_id", deviceId));
+    }
+
+    [Fact]
+    public async Task A_delete_whose_device_row_is_held_by_an_open_delete_waits_and_then_answers_204()
+    {
+        await using var app = await TestApp.StartAsync(_db);
+        var (deviceId, token) = await app.RegisterAsync();
+        await using var holder = await PostgresFixture.OpenAsync(app.Settings);
+        await using var tx = await holder.BeginTransactionAsync();
+        await holder.ExecuteAsync("DELETE FROM devices WHERE id = @deviceId", new { deviceId }, tx);
+
+        var delete = app.ClientFor(token).DeleteAsync("/api/v1/devices/me");
+        await Task.Delay(500);
+        Assert.False(delete.IsCompleted);
+        await tx.CommitAsync();
+
+        var response = await delete;
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(0, await CountForAsync(app, "devices", "id", deviceId));
+    }
+
+    [Fact]
+    public async Task A_capped_device_gets_429_on_delete_keeps_its_data_and_can_delete_when_the_window_reopens()
+    {
+        await using var app = await TestApp.StartAsync(_db);
+        var (deviceId, token) = await app.RegisterAsync();
+        var client = app.ClientFor(token);
+        await PostNewEntryAsync(client, "must survive the cap");
+        for (var i = 0; i < 599; i++)
+        {
+            Assert.Equal(HttpStatusCode.NoContent, (await client.GetAsync("/api/v1/tip/today")).StatusCode);
+        }
+
+        await AssertProblemAsync(await client.DeleteAsync("/api/v1/devices/me"), HttpStatusCode.TooManyRequests, "rate_limited");
+
+        Assert.Equal(1, await CountForAsync(app, "devices", "id", deviceId));
+        Assert.Equal(1, await CountForAsync(app, "entries", "device_id", deviceId));
+        app.Clock.Now += TimeSpan.FromMinutes(61);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync("/api/v1/devices/me")).StatusCode);
+        Assert.Equal(0, await CountForAsync(app, "devices", "id", deviceId));
+    }
+
     [Fact]
     public async Task Health_answers_and_ready_checks_the_database()
     {

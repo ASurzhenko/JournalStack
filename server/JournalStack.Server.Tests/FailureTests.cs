@@ -49,17 +49,51 @@ public class FailureTests
         Assert.Equal("database_unavailable", json.GetProperty("code").GetString());
     }
 
-    // The gate needs the database before any page runs, and it does not catch database errors.
-    // An outage must never look like a sign-out, so the answer is 503 and not a redirect to the login page.
     [Fact]
-    public async Task When_the_database_is_down_an_admin_call_answers_503_and_not_a_redirect_to_login()
+    public async Task When_the_database_is_down_a_delete_answers_503_and_never_204()
     {
         await using var app = await StartWithDatabaseDownAsync();
+
+        var response = await app.ClientFor(new string('a', Tokens.Length)).DeleteAsync("/api/v1/devices/me");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("database_unavailable", json.GetProperty("code").GetString());
+    }
+
+    // The admin settings are present, so the only thing wrong is the database.
+    private async Task<TestApp> StartAdminWithDatabaseDownAsync()
+    {
+        var settings = await _db.NewDatabaseAsync(migrate: false);
+        settings["PGPORT"] = PostgresFixture.UnusedPort().ToString();
+        settings["ADMIN_PASSWORD_HASH"] = TestApp.AdminTestHash;
+        settings["ADMIN_API_KEY"] = TestApp.AdminTestKey;
+        return new TestApp(settings);
+    }
+
+    // The session check needs the database and does not catch database errors.
+    // An outage must never look like a sign-out, so the answer is 503 and not a 401.
+    [Fact]
+    public async Task When_the_database_is_down_an_admin_api_call_answers_503_and_not_a_401()
+    {
+        await using var app = await StartAdminWithDatabaseDownAsync();
+
+        var response = await app.AdminApi(session: new string('a', Tokens.Length)).GetAsync("/admin/api/session");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("database_unavailable", (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+
+    // The same outage seen from the admin app: 503 and not a redirect to the sign-in page.
+    [Fact]
+    public async Task When_the_database_is_down_an_admin_page_answers_503_and_not_a_redirect_to_login()
+    {
+        await using var app = await StartAdminWithDatabaseDownAsync();
 
         var response = await app.AdminClient(new string('a', Tokens.Length)).GetAsync("/admin");
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        Assert.Equal("database_unavailable", (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        Assert.Equal("database_unavailable", await AdminErrors.CodeAsync(response));
     }
 
     [Fact]

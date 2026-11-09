@@ -8,7 +8,7 @@
 # Source connection: PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE (default: local compose database).
 # The scratch container, its volume, the server container and the temp folder are removed at the end, also on failure.
 # Usage: powershell -File scripts/restore-drill.ps1 [-SourceUrl http://127.0.0.1:8080]
-# The drill leaves two devices and two entries named "drill ..." in the source database. There is no delete endpoint.
+# The drill leaves two devices and two entries named "drill ..." in the source database.
 param(
     [string]$SourceUrl = "http://127.0.0.1:8080",
     [int]$ScratchPort = 5541,

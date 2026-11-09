@@ -1,28 +1,52 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Dapper;
 using Microsoft.AspNetCore.Identity;
 using Npgsql;
 
 namespace JournalStack.Server;
 
+// The admin API. Its only caller is the admin app, which sends the service key on every request
+// and the session token on every request after sign-in. The browser never calls it.
 public static class Admin
 {
-    public const string CookieName = "js_admin";
     public static readonly TimeSpan SessionLifetime = TimeSpan.FromHours(8);
+
+    public const string KeyHeader = "X-Admin-Key";
+    public const string SessionHeader = "X-Admin-Session";
+
+    // The admin app accepts form values up to 16 Ki characters, and JSON escapes a non-ASCII character as up to 6 bytes.
+    // 128 KiB lets everything the admin app lets through reach the API, so a long tip gets the editor message.
+    internal const int AdminBodyLimit = 128 * 1024;
+
+    // A configured key shorter than this counts as not set.
+    internal const int MinKeyLength = 32;
 
     private const int MinPasswordLength = 12;
 
     private static readonly PasswordHasher<object> Hasher = new();
     private static readonly object NoUser = new();
 
-    private const string Policy = "default-src 'self'; frame-ancestors 'none'; form-action 'self'";
-
     public static void Map(WebApplication app)
     {
-        app.Use(Gate);
-        app.MapPost("/admin/logout", Logout);
-        app.MapRazorPages();
+        // Every route under /admin/api needs the key, sign-in and sign-out included.
+        // Handlers take HttpContext and read the body by hand. A body-bound parameter would be read
+        // before the key filter runs, and before the login lockout counts the attempt.
+        var api = app.MapGroup("/admin/api").AddEndpointFilter(RequireKey);
+
+        api.MapPost("/login", Login);
+
+        // Sign-out needs the key but not a valid session, so a dead session still gets 204 and the admin app clears its cookie.
+        api.MapPost("/logout", Logout);
+
+        var signedIn = api.MapGroup("").AddEndpointFilter(RequireSession);
+        signedIn.MapGet("/session", () => Results.NoContent());
+        signedIn.MapGet("/tips", async (NpgsqlDataSource db, HttpContext http) =>
+            Results.Ok(await AdminContent.ListTips(db, http.RequestAborted)));
+        signedIn.MapPost("/tips", SaveTip);
+        signedIn.MapGet("/entries", async (NpgsqlDataSource db, HttpContext http) =>
+            Results.Ok(await AdminContent.ListEntries(db, http.RequestAborted)));
     }
 
     public static string HashPassword(string password)
@@ -63,100 +87,49 @@ public static class Admin
         return http.RequestServices.GetRequiredService<IConfiguration>()["ADMIN_PASSWORD_HASH"] ?? "";
     }
 
-    private static CookieOptions CookieFor(HttpContext http, DateTimeOffset? expires)
+    // Empty or short counts as not set. Used by the filter and by the startup warning.
+    internal static bool KeyIsSet(string? configuredKey)
     {
-        return new CookieOptions
-        {
-            HttpOnly = true,
-            SameSite = SameSiteMode.Strict,
-            Secure = http.Request.IsHttps,
-            Path = "/admin",
-            Expires = expires,
-        };
+        return configuredKey is not null && configuredKey.Length >= MinKeyLength;
     }
 
-    // Called by the login page after the password matched. The cookie is appended only after the INSERT returns.
-    // A failed INSERT is not caught, so the catch-all middleware answers and no session cookie leaves the server.
-    internal static async Task StartSessionAsync(HttpContext http, NpgsqlDataSource db, TimeProvider clock, string hash)
+    // The key check, first on every admin route. The answer is never cached because the login answer carries the token.
+    // A key that is not set refuses everything, also an empty presented key.
+    private static async ValueTask<object?> RequireKey(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
-        var token = Tokens.New();
-        var expires = clock.GetUtcNow().Add(SessionLifetime);
-
-        await using var conn = await db.OpenConnectionAsync(http.RequestAborted);
-        await conn.ExecuteAsync(
-            "INSERT INTO admin_sessions (token_hash, expires_at) VALUES (@hash, @expires)",
-            new { hash = SessionHash(token, hash), expires = expires.UtcDateTime });
-
-        http.Response.Cookies.Append(CookieName, token, CookieFor(http, expires));
-    }
-
-    private static async Task<IResult> Logout(HttpContext http, NpgsqlDataSource db)
-    {
-        var token = http.Request.Cookies[CookieName];
-        if (string.IsNullOrEmpty(token))
-        {
-            return Results.Redirect("/admin/login");
-        }
-
-        // The cookie is cleared only after the DELETE returns. A failed DELETE leaves the session valid and the cookie in place.
-        await using var conn = await db.OpenConnectionAsync(http.RequestAborted);
-        await conn.ExecuteAsync(
-            "DELETE FROM admin_sessions WHERE token_hash = @hash",
-            new { hash = SessionHash(token, ConfiguredHash(http)) });
-
-        http.Response.Cookies.Delete(CookieName, CookieFor(http, null));
-        return Results.Redirect("/admin/login");
-    }
-
-    // Runs for every path under /admin, so a page added later is protected without anyone remembering to.
-    // Only the login and logout paths are exempt from the session check.
-    // Private data is never cached, and the policy removes inline script and forms that post elsewhere.
-    private static async Task Gate(HttpContext http, RequestDelegate next)
-    {
-        var path = http.Request.Path;
-        if (!path.StartsWithSegments("/admin", StringComparison.OrdinalIgnoreCase))
-        {
-            await next(http);
-            return;
-        }
-
+        var http = context.HttpContext;
         http.Response.Headers.CacheControl = "no-store";
-        http.Response.Headers.ContentSecurityPolicy = Policy;
 
-        // Checked before the session, so a foreign page is refused with 403 whether or not the visitor is signed in.
-        if (!HttpMethods.IsGet(http.Request.Method) && !HttpMethods.IsHead(http.Request.Method)
-            && !HttpMethods.IsOptions(http.Request.Method) && !SameHostOrigin(http))
+        var configured = http.RequestServices.GetRequiredService<IConfiguration>()["ADMIN_API_KEY"];
+        if (!KeyIsSet(configured))
         {
-            await Problems.Create(403, "csrf_origin", "The Origin header is missing or is not this site.").ExecuteAsync(http);
-            return;
+            return Problems.Create(503, "admin_key_not_configured", "The admin key is not set on this server.");
         }
 
-        var exempt = string.Equals(path.Value, "/admin/login", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(path.Value, "/admin/logout", StringComparison.OrdinalIgnoreCase);
-        if (!exempt && !await SessionIsValidAsync(http))
+        // Compared in constant time, so the time taken does not tell how much of a guess was right.
+        var presented = Encoding.UTF8.GetBytes(http.Request.Headers[KeyHeader].ToString());
+        if (!CryptographicOperations.FixedTimeEquals(presented, Encoding.UTF8.GetBytes(configured!)))
         {
-            http.Response.Redirect("/admin/login");
-            return;
+            return Problems.Create(401, "admin_key", "The admin key is missing or wrong.");
         }
 
-        await next(http);
+        return await next(context);
     }
 
-    // A page on another site cannot forge the Origin header of a browser form post.
-    private static bool SameHostOrigin(HttpContext http)
+    private static async ValueTask<object?> RequireSession(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
-        return Uri.TryCreate(http.Request.Headers.Origin.ToString(), UriKind.Absolute, out var origin)
-            && string.Equals(origin.Authority, http.Request.Host.Value, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static async Task<bool> SessionIsValidAsync(HttpContext http)
-    {
-        var token = http.Request.Cookies[CookieName];
-        if (string.IsNullOrEmpty(token))
+        var http = context.HttpContext;
+        var token = http.Request.Headers[SessionHeader].ToString();
+        if (token.Length == 0 || !await SessionIsValidAsync(http, token))
         {
-            return false;
+            return Problems.Create(401, "session_invalid", "The admin session is missing, expired or unknown.");
         }
 
+        return await next(context);
+    }
+
+    private static async Task<bool> SessionIsValidAsync(HttpContext http, string token)
+    {
         var db = http.RequestServices.GetRequiredService<NpgsqlDataSource>();
         var clock = http.RequestServices.GetRequiredService<TimeProvider>();
         await using var conn = await db.OpenConnectionAsync(http.RequestAborted);
@@ -164,5 +137,125 @@ public static class Admin
             "SELECT 1 FROM admin_sessions WHERE token_hash = @hash AND expires_at > @now",
             new { hash = SessionHash(token, ConfiguredHash(http)), now = clock.GetUtcNow().UtcDateTime });
         return found is not null;
+    }
+
+    // Order: hash set, lockout counts the attempt, body read, password check, INSERT, answer.
+    // The token is in the answer only after the INSERT returned. A failed INSERT is not caught, so the catch-all
+    // middleware answers and no token leaves the server.
+    private static async Task<IResult> Login(HttpContext http, NpgsqlDataSource db, Limits limits, TimeProvider clock)
+    {
+        var hash = ConfiguredHash(http);
+        if (hash.Length == 0)
+        {
+            return Problems.Create(503, "admin_not_configured", "Admin login is not set up on this server.");
+        }
+        if (!limits.AdminLogins.TryTake("all"))
+        {
+            return Problems.Create(429, "login_locked", "Too many login attempts. Try again in a minute.");
+        }
+
+        var (values, status, error) = await ReadStrings(http, AdminBodyLimit, "password");
+        if (status == 413)
+        {
+            return error!;
+        }
+
+        // A body that is not a JSON object, or has no string password, is a wrong password. It was already counted.
+        var password = status == 0 ? values[0] : null;
+        if (password is null || !PasswordMatches(hash, password))
+        {
+            return Problems.Create(401, "invalid_credentials", "The password is not right.");
+        }
+
+        var token = Tokens.New();
+        var expires = clock.GetUtcNow().Add(SessionLifetime);
+        await using var conn = await db.OpenConnectionAsync(http.RequestAborted);
+        await conn.ExecuteAsync(
+            "INSERT INTO admin_sessions (token_hash, expires_at) VALUES (@hash, @expires)",
+            new { hash = SessionHash(token, hash), expires = expires.UtcDateTime });
+
+        return Results.Ok(new { token, expiresAt = expires.UtcDateTime });
+    }
+
+    // A failed DELETE is not caught, so the answer is a 5xx and the admin app keeps the session.
+    // A session that is empty, unknown or expired is 204 as well.
+    private static async Task<IResult> Logout(HttpContext http, NpgsqlDataSource db)
+    {
+        var token = http.Request.Headers[SessionHeader].ToString();
+        if (token.Length == 0)
+        {
+            return Results.NoContent();
+        }
+
+        await using var conn = await db.OpenConnectionAsync(http.RequestAborted);
+        await conn.ExecuteAsync(
+            "DELETE FROM admin_sessions WHERE token_hash = @hash",
+            new { hash = SessionHash(token, ConfiguredHash(http)) });
+        return Results.NoContent();
+    }
+
+    // Same order the person saw in the old pages: text and status are checked first (422), then the id (404), then the write.
+    private static async Task<IResult> SaveTip(HttpContext http, NpgsqlDataSource db)
+    {
+        var (values, _, error) = await ReadStrings(http, AdminBodyLimit, "id", "text", "status");
+        if (error is not null)
+        {
+            return error;
+        }
+
+        var rawId = values[0] ?? "";
+        var (text, tipStatus, message) = AdminContent.ValidateTip(values[1], values[2]);
+        if (message is not null)
+        {
+            return Problems.Create(422, "invalid_tip", message);
+        }
+
+        Guid? id = null;
+        if (rawId.Length > 0)
+        {
+            if (!Guid.TryParse(rawId, out var parsed))
+            {
+                return Problems.Create(404, "tip_not_found", "That tip no longer exists.");
+            }
+            id = parsed;
+        }
+
+        if (id is null)
+        {
+            var created = await AdminContent.CreateTip(db, text, tipStatus, http.RequestAborted);
+            return Results.Json(new { id = created }, statusCode: 201);
+        }
+        if (!await AdminContent.UpdateTip(db, id.Value, text, tipStatus, http.RequestAborted))
+        {
+            return Problems.Create(404, "tip_not_found", "That tip no longer exists.");
+        }
+        return Results.NoContent();
+    }
+
+    // Reads a small JSON object and returns the named string properties. A missing or non-string property is null.
+    // Status is 0 on success, 413 when the body is over the limit, 400 when it is not a JSON object.
+    internal static async Task<(string?[] Values, int Status, IResult? Error)> ReadStrings(HttpContext http, int limit, params string[] names)
+    {
+        var body = await Entries.ReadBody(http.Request, limit, http.RequestAborted);
+        if (body is null)
+        {
+            return ([], 413, Problems.Create(413, "payload_too_large", "The request body is too large."));
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return ([], 400, Problems.Create(400, "invalid_json", "The body must be a JSON object."));
+            }
+
+            return (names.Select(name => Entries.ReadString(root, name)).ToArray(), 0, null);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return ([], 400, Problems.Create(400, "invalid_json", "The body is not valid JSON."));
+        }
     }
 }
