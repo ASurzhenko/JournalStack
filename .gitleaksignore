@@ -1,2 +1,9 @@
 # A marker string in a test that proves a wrong password never reaches the output. It is not a secret.
 05b4a36d6849dd675279896659bba85f525b4823:server/JournalStack.Server.Tests/AdminAuthTests.cs:generic-api-key:10
+
+# Marker strings in tests that prove a wrong password or key never reaches the log. They are not secrets.
+d05cda532e1289a25619cf71eef07e34d1c44c87:server/JournalStack.Server.Tests/AdminAppTests.cs:generic-api-key:16
+d05cda532e1289a25619cf71eef07e34d1c44c87:server/JournalStack.Server.Tests/AdminAppTests.cs:generic-api-key:135
+7fe88c41e437b99f2603c46fd4a11f28e1ac04bb:server/JournalStack.Server.Tests/AdminApiTests.cs:generic-api-key:13
+7fe88c41e437b99f2603c46fd4a11f28e1ac04bb:server/JournalStack.Server.Tests/AdminApiTests.cs:generic-api-key:367
+7fe88c41e437b99f2603c46fd4a11f28e1ac04bb:server/JournalStack.Server.Tests/AdminApiTests.cs:generic-api-key:386
