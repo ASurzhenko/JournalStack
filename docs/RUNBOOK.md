@@ -285,10 +285,11 @@ This keeps the window busy and shows the server log. Run any other command in a 
 The migrations build the empty database again. There is no seed script; demo data is typed in through the app and
 the admin pages.
 
-The app: stop Play, then delete its file. It holds the device token and every local entry (D-023).
+The app: stop Play, then delete its file for this server. It holds the device token and every local entry (D-023).
+The file is named after the server's host and port; for the local stack on port 8080:
 
 ```powershell
-Remove-Item "$env:USERPROFILE\AppData\LocalLow\DefaultCompany\JournalStack\state.json"
+Remove-Item "$env:USERPROFILE\AppData\LocalLow\DefaultCompany\JournalStack\state-127.0.0.1-8080.json"
 ```
 
 On next start the app registers as a new device.

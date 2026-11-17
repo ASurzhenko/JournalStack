@@ -2,13 +2,21 @@ using UnityEngine;
 
 namespace JournalStack.Client
 {
+    public enum ServerTarget
+    {
+        Local,
+        Hosted,
+    }
+
     [CreateAssetMenu(menuName = "JournalStack/Server Config")]
     public sealed class ServerConfig : ScriptableObject
     {
-        [SerializeField] private string _editorUrl = "http://127.0.0.1:8080";
-        [SerializeField] private string _deviceUrl = "https://example.invalid";
+        [SerializeField] private ServerTarget _editorTarget = ServerTarget.Local;
+        [SerializeField] private string _localUrl = "http://127.0.0.1:8080";
+        [SerializeField] private string _hostedUrl = "https://example.invalid";
 
-        // A phone cannot reach 127.0.0.1, so the Editor and a device use different addresses.
-        public string BaseUrl => (Application.isEditor ? _editorUrl : _deviceUrl).TrimEnd('/');
+        // The Editor talks to the server picked in _editorTarget. A device build always talks to the hosted server,
+        // because a phone cannot reach 127.0.0.1.
+        public string BaseUrl => (Application.isEditor && _editorTarget == ServerTarget.Local ? _localUrl : _hostedUrl).TrimEnd('/');
     }
 }

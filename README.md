@@ -107,10 +107,11 @@ repo root.
 5. Admin app: open `http://127.0.0.1:8090/admin` in a browser and sign in with the password from step 2.
 
 6. The app: open the repo folder in Unity, open `Assets/Scenes/Main.unity` and press Play. In the Editor the app
-   talks to `http://127.0.0.1:8080` (set in `Assets/Config/ServerConfig.asset`).
+   talks to `http://127.0.0.1:8080` (set in `Assets/Config/ServerConfig.asset`). Its Editor Target dropdown switches
+   the Editor between this local address and the hosted one. Each server keeps its own state file (D-026).
 
 If port 8080 is taken on your computer, a file `docker-compose.override.yml` (ignored by git) can publish the
-server on another port. The admin app uses 8090. The app's Editor address then has to match.
+server on another port. The admin app uses 8090. The app's Local Url then has to match.
 
 Tests:
 
@@ -130,8 +131,8 @@ Tests:
 | Unity app | Editor Play mode | A device build pointing at the hosted address |
 | Tests and secret scan | `dotnet test`, gitleaks | GitHub Actions on every push to `main` and every pull request (D-031) |
 
-FILL AFTER DEPLOY: the hosted server address, the Railway project and service names, the PostgreSQL major version
-Railway runs, and the device address in `ServerConfig.asset`.
+FILL AFTER DEPLOY: the hosted server address, the Railway project and service names, and the PostgreSQL major
+version Railway runs.
 
 How to deploy, back up and restore: [docs/RUNBOOK.md](docs/RUNBOOK.md). What can fail and what is not done:
 [docs/WHAT-CAN-GO-WRONG.md](docs/WHAT-CAN-GO-WRONG.md). Why things are the way they are:

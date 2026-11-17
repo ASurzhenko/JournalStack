@@ -12,5 +12,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e21db9351af6af74ebc80e385445c9d1, type: 3}
   m_Name: ServerConfig
   m_EditorClassIdentifier: JournalStack.Client::JournalStack.Client.ServerConfig
-  _editorUrl: http://127.0.0.1:8080
-  _deviceUrl: https://example.invalid
+  _editorTarget: 0
+  _localUrl: http://127.0.0.1:8080
+  _hostedUrl: https://example.invalid

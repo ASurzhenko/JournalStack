@@ -1,11 +1,33 @@
 using System;
 using System.IO;
+using System.Text;
 using UnityEngine;
 
 namespace JournalStack.Client
 {
     public static class StateFile
     {
+        // One file per server: the token and the entries belong to the server that issued the token, so switching
+        // servers must not mix them. http://127.0.0.1:8080 gives state-127.0.0.1-8080.json.
+        // Characters a file name cannot hold (an IPv6 host) become '_'.
+        public static string NameFor(string baseUrl)
+        {
+            if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out Uri uri))
+            {
+                Debug.LogWarning($"{nameof(StateFile)}.{nameof(NameFor)} the server address is not an absolute address; using state.json");
+                return "state.json";
+            }
+
+            var name = new StringBuilder("state-");
+            foreach (char c in uri.Host)
+            {
+                name.Append(char.IsLetterOrDigit(c) || c == '.' || c == '-' ? c : '_');
+            }
+
+            name.Append('-').Append(uri.Port).Append(".json");
+            return name.ToString();
+        }
+
         // A missing file is a fresh install. A file that cannot be read as state is copied aside (never deleted,
         // it may hold Pending entries) and the app starts empty with a warning.
         public static LocalState Load(string path, out string warning)

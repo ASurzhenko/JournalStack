@@ -244,12 +244,16 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
 ## D-023 The client keeps one file: token and outbox together
 
 - Status: in use from slice B.
-- Choice: `state.json` in the app's private storage holds the device id, the token and every local entry. It is
+- Choice: `state.json` in the app's private storage holds the device id, the token and every local entry. There is
+  one such file per server, named after the server's host and port (`state-127.0.0.1-8080.json`), because a token
+  only means something to the server that issued it. The rest of these docs call it `state.json`. It is
   written to a temporary file and moved over the old one. A file that cannot be read is copied aside, never
   deleted, and the app starts empty with a visible warning.
 - Why: One file means one write, so the token and the entries can't get out of sync. Also resetting the demo is
   easy, just delete the file.
 - Cost: The token sits in plain text in app-private storage. Someone with an unlocked or rooted phone can read it.
+  A server reached by a new address (another port, another domain) starts with an empty file and a new device. A file
+  named plain `state.json`, from before the per-server name, is no longer read.
 - Revisit if: The token needs to be protected, or the data grows large enough to need a database.
 
 ## D-024 An entry is Pending when the server gave no usable answer, Failed when it refused or crashed
@@ -283,11 +287,14 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
 ## D-026 Two server addresses in one config asset
 
 - Status: in use from slice B.
-- Choice: The config asset has an address for the Editor and an address for a device. One line picks by
-  `Application.isEditor`.
+- Choice: The config asset has a local address and a hosted address. A device build always uses the hosted one. In
+  the Editor a dropdown, Editor Target, picks Local or Hosted, so the Editor can talk to the Docker stack or to
+  Railway without retyping an address. Each server keeps its own state file (D-023), so switching back and forth
+  does not mix tokens or entries.
 - Why: The phone and the Editor need different server addresses. I keep both in one config asset and the app picks
   the right one automatically. I don't have to edit anything before each build.
-- Cost: Two fields to keep right.
+- Cost: Two addresses and a dropdown to keep right. The hosted address is not committed: the asset in the repo
+  holds a placeholder, `https://example.invalid`, which never resolves.
 - Revisit if: There is a third place to run the client, such as a staging server.
 
 ## D-027 No art in the first client

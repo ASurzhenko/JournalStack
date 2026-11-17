@@ -136,5 +136,29 @@ namespace JournalStack.Client.Tests
             Assert.IsNotNull(parsed.entries);
             Assert.AreEqual(0, parsed.entries.Count);
         }
+
+        [TestCase("http://127.0.0.1:8080", "state-127.0.0.1-8080.json")]
+        [TestCase("http://127.0.0.1:8081/", "state-127.0.0.1-8081.json")]
+        [TestCase("https://server-x.up.railway.app", "state-server-x.up.railway.app-443.json")]
+        [TestCase("https://Server-X.up.railway.app", "state-server-x.up.railway.app-443.json")]
+        [TestCase("http://[::1]:8080", "state-___1_-8080.json")]
+        public void EachServerGetsItsOwnFile(string baseUrl, string expected)
+        {
+            Assert.AreEqual(expected, StateFile.NameFor(baseUrl));
+        }
+
+        [Test]
+        public void TwoServersNeverShareAFile()
+        {
+            Assert.AreNotEqual(StateFile.NameFor("http://127.0.0.1:8080"), StateFile.NameFor("http://127.0.0.1:8081"));
+            Assert.AreNotEqual(StateFile.NameFor("http://127.0.0.1:8080"), StateFile.NameFor("https://server-x.up.railway.app"));
+        }
+
+        [Test]
+        public void AnAddressThatIsNotAbsoluteFallsBackToTheOldNameWithAWarning()
+        {
+            LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex("not an absolute address"));
+            Assert.AreEqual("state.json", StateFile.NameFor("not a url"));
+        }
     }
 }

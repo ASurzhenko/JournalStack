@@ -71,8 +71,9 @@ namespace JournalStack.Client
 
         private async Task StartupAsync()
         {
-            _outbox = new Outbox(Path.Combine(Application.persistentDataPath, "state.json"));
-            _api = new ApiClient(_config.BaseUrl);
+            string baseUrl = _config.BaseUrl;
+            _outbox = new Outbox(Path.Combine(Application.persistentDataPath, StateFile.NameFor(baseUrl)));
+            _api = new ApiClient(baseUrl);
 
             _refreshButton.onClick.AddListener(OnRefreshClicked);
             _composer.SendClicked += OnSendClicked;
