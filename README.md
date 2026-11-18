@@ -117,22 +117,22 @@ Tests:
 
 - Server: `dotnet test server/JournalStack.Server.sln`. The tests start their own PostgreSQL in Docker, so
   Docker must be running. The last full run passed 252 of 252 ([docs/PROGRESS.md](docs/PROGRESS.md)).
-- App: Unity, Window > General > Test Runner > EditMode. 93 tests, all passing on the last run. They are run by hand
+- App: Unity, Window > General > Test Runner > EditMode. 100 tests, all passing on the last run. They are run by hand
   before a client change is merged.
 
 ## What runs where
 
-| Part | Local | Hosted |
+| Part | Local | Hosted on Railway |
 |---|---|---|
-| Server | Docker container from `server/Dockerfile`, port 8080 | Nothing is hosted yet. Planned: one Railway service built from the same Dockerfile (D-003) |
-| Database | `postgres:16-alpine` container, port 5440 on this computer only | Planned: Railway PostgreSQL |
-| Migrations | `migrate` step in `docker-compose.yml`, before the server | Planned: Railway pre-deploy command (D-004) |
-| Admin app | Docker container from `admin/Dockerfile`, `http://127.0.0.1:8090/admin` | Nothing is hosted yet. Planned: a second Railway service, with a private address to the server |
-| Unity app | Editor Play mode | A device build pointing at the hosted address |
+| Server | Docker container from `server/Dockerfile`, port 8080 | Service `server`, built from the same Dockerfile on every push to `main` (D-003) |
+| Database | `postgres:16-alpine` container, port 5440 on this computer only | Service `Postgres`, Railway's PostgreSQL with a volume and no public address |
+| Migrations | `migrate` step in `docker-compose.yml`, before the server | The server's pre-deploy command, the same `migrate` (D-004) |
+| Admin app | Docker container from `admin/Dockerfile`, `http://127.0.0.1:8090/admin` | Service `admin`, its own public address, reaches the server over Railway's private network (D-033) |
+| Unity app | Editor Play mode, Editor Target set to Local | Editor Target set to Hosted, or an Android build, which always uses the hosted address |
 | Tests and secret scan | `dotnet test`, gitleaks | GitHub Actions on every push to `main` and every pull request (D-031) |
 
-FILL AFTER DEPLOY: the hosted server address, the Railway project and service names, and the PostgreSQL major
-version Railway runs.
+The hosted addresses are not in the repo. The PostgreSQL major version Railway runs has not been checked yet. How
+the Railway services are set up: [docs/RUNBOOK.md](docs/RUNBOOK.md), section 1.
 
 How to deploy, back up and restore: [docs/RUNBOOK.md](docs/RUNBOOK.md). What can fail and what is not done:
 [docs/WHAT-CAN-GO-WRONG.md](docs/WHAT-CAN-GO-WRONG.md). Why things are the way they are:
@@ -153,7 +153,7 @@ How to deploy, back up and restore: [docs/RUNBOOK.md](docs/RUNBOOK.md). What can
 | Migration | A numbered SQL file that changes the shape of the database, for example adds a column. They live in `server/JournalStack.Server/Migrations/` and run in order, once each. |
 | Docker, container, image | Docker runs a program in a sealed box (a container) built from a recipe (an image). The same image runs locally and on the host. |
 | docker compose | Starts several containers together from `docker-compose.yml`. Here: database, migrations, server, admin app. |
-| Railway | The hosting service planned for the server and the database. |
+| Railway | The hosting service that runs the server, the admin app and the database. |
 | Deploy | Putting a new version of the server live. |
 | Rollback | Going back to the previous version of the server. |
 | Pre-deploy | A step the host runs before the new version starts. Here it runs the migrations. |

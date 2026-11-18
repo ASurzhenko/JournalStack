@@ -3,9 +3,9 @@
 What to do, step by step, for each job that keeps the stand running. Commands are for PowerShell on Windows, run
 from the repo root. Docker Desktop must be running for every command that uses `docker`.
 
-Local parts are proven and carry real numbers from [PROGRESS.md](PROGRESS.md). Anything on Railway has not been
-run yet. Those places are marked **FILL AFTER DEPLOY** and get filled in from the first real run, never from a
-guess.
+Local parts are proven and carry real numbers from [PROGRESS.md](PROGRESS.md). The Railway parts below were written
+from the first deploys (10 to 14 November 2026), never from a guess. Steps that were not run on Railway say so.
+Hosted addresses are not written in the repo; take them from the service's Settings, Networking.
 
 Settings the server and the admin app read (names only, values are never in the repo, see `.env.example`):
 
@@ -53,24 +53,46 @@ The last line must be `PASS`.
 
 ### Railway
 
-What is decided: two Railway services, the server built from `server/Dockerfile` and the admin app built from
-`admin/Dockerfile`, one Railway PostgreSQL, the pre-deploy command `dotnet JournalStack.Server.dll migrate` on the
-server only, and the variables above set as Railway service variables (D-003, D-004, D-006, D-033). The admin app
-gets no database variables and no password hash.
+One Railway project with three services: `server` (built from `server/Dockerfile`), `admin` (built from
+`admin/Dockerfile`) and `Postgres` (Railway's template, with a volume and no public address). The pre-deploy command
+`dotnet JournalStack.Server.dll migrate` is on the server only. The variables above are Railway service variables
+(D-003, D-004, D-006, D-033). The admin app gets no database variables and no password hash.
 
-FILL AFTER DEPLOY: how a deploy is started (push to a branch, or `railway up`), which branch Railway watches, where
-the pre-deploy command is set, the health check path, and how long a deploy takes.
+How it is set up, per service, in Settings:
 
-After every deploy, run the smoke test against the hosted address:
+- Source: this repo, branch `main`. Root directory `/server` for the server, `/admin` for the admin app.
+- Build: builder **Dockerfile**. Railway's default builder is a different one, so this is chosen by hand.
+- Deploy: pre-deploy command (server only), health check path `/health` (both).
+- Networking: a generated public domain. The container listens on 8080.
+
+Server variables: the five `PG*` names as references to the Postgres service (`${{Postgres.PGHOST}}` and so on),
+`PORT=8080`, `ADMIN_PASSWORD_HASH`, `ADMIN_API_KEY`. Admin variables: `ADMIN_API_URL=http://server.railway.internal:8080`,
+`ADMIN_API_KEY=${{server.ADMIN_API_KEY}}`, `PORT=8080`.
+
+How a deploy starts: a push to `main`, or the Deploy button. The dashboard collects changes to settings and
+variables as "Apply N changes", and nothing happens until Deploy is pressed. A deploy builds the image, runs the
+pre-deploy command, starts the new container, waits for `/health` to answer 200, then moves traffic to it. The first
+server deploy took 46 seconds from start to Active.
+
+Two things learned on the first deploy:
+
+- A reference to the server's private address, `${{server.RAILWAY_PRIVATE_DOMAIN}}`, showed the right value in the
+  variable preview but reached the container unresolved, and the admin app refused to start. The literal private
+  name works. Check what a deployment really got in that deployment's Details, Variables, not in the preview.
+- A variable name with a space at the end is accepted without a warning, and the app then does not find it. Check
+  names in the Raw Editor.
+
+After every deploy, run the smoke test against the hosted server address:
 
 ```powershell
-powershell -File scripts/smoke.ps1 -BaseUrl https://FILL-AFTER-DEPLOY
+powershell -File scripts/smoke.ps1 -BaseUrl https://<server address>
 ```
 
-The smoke test deletes its own device and entry at the end, so it leaves nothing behind.
+The smoke test deletes its own device and entry at the end, so it leaves nothing behind. It passed against Railway
+on the first deploy.
 
-The "Wait for CI" switch on Railway stays off until the first deploy (D-031). FILL AFTER DEPLOY: whether it was
-turned on.
+The "Wait for CI" switch on Railway makes a push deploy only after the CI checks pass (D-031). It was off for the
+first deploys.
 
 ## 2. Roll back
 
@@ -95,9 +117,12 @@ This keeps the window busy and shows the logs. Run any other command in a second
 
 ### Railway
 
-FILL AFTER DEPLOY: where the previous deployment is redeployed in Railway, whether the pre-deploy step runs again
-on a rollback, and how long it takes. This has not been rehearsed (see "Not done and why" in
-[WHAT-CAN-GO-WRONG.md](WHAT-CAN-GO-WRONG.md)).
+In the service's Deployments list, each deployment has a Redeploy action. A redeploy runs that deployment again with
+the variables it had then, not the current ones.
+
+A redeploy of the current server was run once: a health check every 2 seconds for about six minutes saw no answer
+other than 200, and the admin stayed signed in. A rollback to an older deployment, and whether the pre-deploy step
+runs again on it, have not been rehearsed (see "Not done and why" in [WHAT-CAN-GO-WRONG.md](WHAT-CAN-GO-WRONG.md)).
 
 ## 3. Add a field (the live change)
 
@@ -152,8 +177,9 @@ becomes `0005_add_entry_mood.sql` and is renamed before its first Railway run.
 
 7. **Prove it.** An entry made before the change shows an empty mood in the admin. A new entry with mood 4 shows 4.
 
-8. **Railway.** Merge `live-demo` into the branch Railway deploys. The pre-deploy migration runs, then the new
-   server starts. FILL AFTER DEPLOY: where the deploy log shows the migration.
+8. **Railway.** Merge `live-demo` into `main`. The pre-deploy migration runs, then the new server starts. The
+   deploy log on Railway did not show a separate pre-deploy stage or the migration output on the first deploy, so
+   check the result instead: the smoke test needs the tables, and an entry with a mood shows the new column works.
 
 If the migration fails, the deploy stops and the old version keeps serving. This was rehearsed locally with a
 broken script: `migrate` exited with code 1, the journal stayed at four scripts, no rows changed and the running
@@ -180,31 +206,31 @@ Measured on 2026-10-29 with 78 entries, 9 devices, 1 tip: dump 15,503 bytes, `pg
 
 ### Railway
 
-The database has to be reachable from this computer for the length of the dump. The steps are: open access, dump,
-close access.
+Not run on Railway yet. The plan: the database has no public address, so it has to be made reachable from this
+computer for the length of the dump, through Railway's TCP proxy on the Postgres service, and closed again after.
 
-1. Open access. FILL AFTER DEPLOY: where the TCP proxy is switched on in Railway, and what host and port it gives.
+1. Open access: switch on the TCP proxy for the Postgres service. It gives a host and a port.
 2. Set all five variables in this PowerShell window. With `PGHOST` set, the script needs the other four too and
    never falls back to the local database.
 
    ```powershell
-   $env:PGHOST = "FILL-AFTER-DEPLOY"
-   $env:PGPORT = "FILL-AFTER-DEPLOY"
-   $env:PGUSER = "FILL-AFTER-DEPLOY"
-   $env:PGDATABASE = "FILL-AFTER-DEPLOY"
+   $env:PGHOST = "<proxy host>"
+   $env:PGPORT = "<proxy port>"
+   $env:PGUSER = "<PGUSER from the Postgres service>"
+   $env:PGDATABASE = "<PGDATABASE from the Postgres service>"
    $env:PGPASSWORD = Read-Host "Railway database password"
-   powershell -File scripts/backup.ps1 -OutFile backups/journalstack-railway-2026-10-30.dump
+   powershell -File scripts/backup.ps1 -OutFile backups/journalstack-railway-<date>.dump
    ```
 
-3. Close access. FILL AFTER DEPLOY: where the TCP proxy is switched off again.
+3. Close access: switch the TCP proxy off again.
 4. Clear the variables so the next local command does not reach Railway:
 
    ```powershell
    Remove-Item env:PGHOST, env:PGPORT, env:PGUSER, env:PGDATABASE, env:PGPASSWORD
    ```
 
-FILL AFTER DEPLOY: the PostgreSQL major version Railway runs (the script prints it), the dump size and time, and
-whether Railway volume backups are on the plan.
+Not known yet: the PostgreSQL major version Railway runs (the script prints it on the first run), the dump size and
+time, and whether Railway's own volume backups are on the plan in use (the Trial).
 
 There is no scheduled backup. The data lost in a disaster is everything since the last dump.
 
@@ -263,8 +289,8 @@ be executed" and the smoke test passed.
 
 ### Railway
 
-FILL AFTER DEPLOY: how an empty Railway database is made or emptied, the restore command through the TCP proxy, and
-the time. Not run yet. A restore from a dump of a different PostgreSQL major has not been tested.
+Not run on Railway yet. The plan is the local steps above pointed at the TCP proxy (section 4), into an empty
+database. A restore from a dump of a different PostgreSQL major has not been tested.
 
 ## 6. Reset the demo
 
@@ -296,7 +322,10 @@ On next start the app registers as a new device.
 
 ### Railway
 
-Restore the dump taken before the demo (section 5). FILL AFTER DEPLOY: the steps and the time.
+Restore the dump taken before the demo (section 5). Not run on Railway yet. Until then, demo data on Railway is
+cleaned through the app: "Delete my data" removes the device it runs on and every entry of that device. Entries of
+other devices stay; they are removed by deleting their device row (section 9, a device token). Tips are never
+deleted, only set to draft (D-012).
 
 ## 7. Where the logs are
 
@@ -331,8 +360,15 @@ Lines that are expected and harmless:
 
 ### Railway
 
-FILL AFTER DEPLOY: where the deploy log, the pre-deploy log and the running service log are, and how to read them
-with the Railway CLI.
+Per service: Deployments, then a deployment, then Build Logs or Deploy Logs. Deploy Logs carry what the running
+container writes, the same lines as locally. The first server deploy showed `Now listening on: http://[::]:8080`.
+
+The pre-deploy step does not show as its own stage there, and the migration output did not appear in Deploy Logs.
+That a migration ran is checked by its result: the smoke test needs the tables.
+
+A deployment's Details lists the variables it really received. Read them there when a setting seems to be ignored.
+
+The Railway CLI was not used; everything above is in the dashboard.
 
 ## 8. When it is down
 
@@ -392,8 +428,14 @@ the server, the app takes no new entries (D-032).
 
 ### Railway
 
-FILL AFTER DEPLOY: where the service status is, how to restart the service, how to check the database service, and
-what the app sees during a restart.
+The project page shows each service with its status. Then:
+
+1. Check the two addresses above against the hosted server address.
+2. Read the service's Deploy Logs (section 7).
+3. Restart: Redeploy on the latest deployment (section 2). A server redeploy was measured once with no answer other
+   than 200, so the app saw nothing.
+4. The database: `/health/ready` answers 503 while it is not reachable. Look at the Postgres service's status and
+   logs on the same page.
 
 ## 9. Rotate secrets
 
@@ -405,8 +447,13 @@ what the app sees during a restart.
    dotnet run --project server/JournalStack.Server -- hash-password
    ```
 
+   Type the password; do not pipe it into the command from Windows PowerShell 5.1. On this machine that put an
+   invisible character (U+FEFF) in front of the password, the hash matched "U+FEFF plus password", and sign-in
+   always said the password was wrong. Check a new hash before using it: sign in locally with it first.
+
 2. Local: put the printed line into `.env` as `ADMIN_PASSWORD_HASH` and run `docker compose up -d`.
-   Railway: FILL AFTER DEPLOY (set the service variable, how the service restarts).
+   Railway: on the `server` service, Variables, set `ADMIN_PASSWORD_HASH` to the new line, then Deploy. Only the
+   server needs it.
 
 A new hash ends every admin session at once, because each stored session is a keyed hash of the token with the
 password hash as the key (D-020). Test: `A_new_password_hash_ends_every_old_session` (`AdminApiTests`).
@@ -422,8 +469,9 @@ The key sits between the admin app and the server (D-034). Both need the same va
    ```
 
 2. Local: put the value into `.env` as `ADMIN_API_KEY` and restart both services: `docker compose up -d`.
-   Railway: FILL AFTER DEPLOY (set it on the server; the admin service reads it by reference, and is redeployed
-   after the change instead of trusting that a changed reference redeploys it).
+   Railway: set `ADMIN_API_KEY` on the `server` service and Deploy. The `admin` service reads it by reference
+   (`${{server.ADMIN_API_KEY}}`); redeploy `admin` too rather than trusting that a changed reference redeploys it.
+   Not rotated on Railway yet.
 
 Sessions stay valid, because the key is not part of the session hash. Until both services have the new value, every
 admin page answers 502 `admin_key_refused` or 503 `admin_key_not_configured`. A short key on the server stops the
@@ -431,7 +479,9 @@ admin API completely, and the server log says so by variable name.
 
 ### Database password
 
-FILL AFTER DEPLOY: how the Railway database password is changed and how the server service gets the new value.
+Not done on Railway yet. The server reads the password by reference to the Postgres service, so the value is
+changed in one place, and the server is redeployed to pick it up. The exact steps on the Postgres service are not
+checked.
 
 ### A device token
 
@@ -449,7 +499,8 @@ docker compose exec db psql -U journal -d journalstack -c "SELECT device_id FROM
 docker compose exec db psql -U journal -d journalstack -c "DELETE FROM devices WHERE id = '<device id>'"
 ```
 
-FILL AFTER DEPLOY: how to run the same two statements against the Railway database.
+On Railway: open access through the TCP proxy (section 4) and run the same two statements with `psql` against the
+proxy host and port. Not run on Railway yet.
 
 ### A secret that reached git
 

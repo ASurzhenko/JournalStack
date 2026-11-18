@@ -2,38 +2,16 @@
 
 ## Now
 
-- Current work: the admin is split into its own app on the branch `feat/admin-app` (see "Admin app split" below):
-  252 server and admin tests pass, the mutation pass is done, the local stack was run. The owner's browser check and
-  the commit are still to do.
-- Earlier: the minimal Unity client (slice B) was built on the branch `feat/unity-client`. Slots 0, 1, 2 slice A
-  (entries as text with the idempotency core), 3 (admin panel) and 3b (the admin front as Razor Pages) are in `main`.
-  The client has 68 EditMode tests, all passing, and was run in Play mode against the local stack (see "Unity
-  client" below). The caret check on a device is not done yet.
-- Done: slot 0, slot 1 (server, migrations 0001-0003, tests), slice A: migration 0004, `POST` and `GET`
-  `/api/v1/entries`, entry cap, body cap, text checks, the tests and the mutation pass below. Slot 3: login, logout,
-  session, tips and entries endpoints, the admin page, 54 new tests (169 in all) and the slot 3 mutation pass below.
-  Slot 3b: the JSON admin API and the static page are replaced by three Razor Pages (sign in, tips, entries), the
-  Origin check replaces the request-header check, 174 tests in all, and the slot 3b mutation pass below. The device
-  API, the migrations and the data model did not change.
-- Slice D1 (delete my data) is written on the branch `feat/delete-device`: the server route and its tests, the
-  client code, the scene wiring and the EditMode tests are done and run (93 of 93). The Play checks ran on
-  2026-11-03: P-D1 to P-D6 and P-D8 passed, P-D7 showed that the panel blocks input, the Play mutation and P-D5b
-  were not run (see "Delete (slice D1)" below). The confirm panel no longer offers a delete when the app holds
-  nothing.
-- Next step: the caret check on a phone, then the first Railway deploy. The images slice (0005) comes later.
-- Slot 3 was checked against a separate compose stack with curl and SQL: cookie flags, lock after five tries,
-  session survives a restart, old session ends on a new hash, 503 and not 401 with the database down. Slot 3b was
-  built with `docker compose build` (the Razor views compile in the image) and smoke-checked on a throwaway stack:
-  the login page and the stylesheet answer 200, `/admin` without a session redirects to the login page, and a POST
-  without an `Origin` header is refused with 403.
-  Checked in a real browser on 2026-11-03 (see "Delete (slice D1)"): script-like text shown literally, entries
-  dated year 0001 and 9999, a 2000-character entry, a form on another site refused with 403. A double click on
-  Save gave one draft and did not produce a real double submit.
-- Slot 6, local half: backup script, timed restore drill, bad-migration rehearsal and two migration tests are
-  done on the branch `chore/backup-restore-drill` (see "Backup and restore drill (local)" below). The Railway half
-  (TCP proxy dump, rollback, volume backups) is not run.
-- Open questions: the recruiter's answer about their Railway stack; the exact wording of the 2024 production claim;
-  whether to keep the reserved migration number 0005 (D-015).
+- Running on Railway since 10 November 2026: services `server`, `admin` and `Postgres`, deployed from `main`, with
+  the migrations as the server's pre-deploy step. The smoke test passed against it, and a server redeploy was
+  measured with no failed answer (see "Railway, first deploy" below).
+- In `main`: slots 0 to 3b, slice B (the Unity client), slice D1 (delete my data), the admin app split (D-033,
+  D-034), the local backup and restore drill, CI, and the Editor switch between the local and the hosted server
+  (D-026). 252 server and admin tests and 100 Unity EditMode tests pass.
+- Checked once on an Android phone on 2026-11-17 (see "Phone check" below). Three client problems found, not fixed.
+- Not done: the Railway half of slot 6 (a dump and a restore through the TCP proxy, a rollback rehearsal, volume
+  backups), the images slice (0005), and the three phone problems. The list with reasons is in
+  [WHAT-CAN-GO-WRONG.md](WHAT-CAN-GO-WRONG.md), "Not done and why".
 
 ## Sessions
 
@@ -538,3 +516,40 @@ Admin checks in a real browser, on the local stack, 2026-11-03. Test entries wer
 | Form on another site (a page on `localhost:9000` posting to `/admin`) | `403` with code `csrf_origin`, no tip created (0 rows), `POST /admin ... 403` in the server log |
 
 The first attempt on 2026-10-30 did not run: the Docker engine did not answer and the system disk was full.
+
+## Railway, first deploy
+
+10 to 14 November 2026. Facts seen on the dashboard; the steps are in [RUNBOOK.md](RUNBOOK.md), section 1.
+
+- Plan in use: the Trial, no card. Spend measured over the first days: about $0.05 a day for the three services.
+- Builder: Dockerfile, chosen by hand (the default is another builder). Root directories `/server` and `/admin`.
+- The dashboard collects setting and variable changes as "Apply N changes"; nothing is built until Deploy.
+- First server deploy: 46 seconds to Active. Log line `Now listening on: http://[::]:8080`.
+- The Deploy Logs show no separate pre-deploy stage and no migration output. The smoke test passing, which needs the
+  tables, is what shows the migrations ran.
+- The server reaches the database at `postgres.railway.internal:5432` through the `PG*` references.
+- `ADMIN_API_URL` written as `http://${{server.RAILWAY_PRIVATE_DOMAIN}}:8080` reached the admin container unresolved,
+  although the variable preview showed the resolved value. The admin app refused to start, as it should. Replaced
+  with the literal `http://server.railway.internal:8080`. `${{server.ADMIN_API_KEY}}`, a reference to a variable
+  set by hand, resolved.
+- A variable name with a trailing space was accepted without a warning and was visible only in the Raw Editor.
+- The first password hash never matched: Windows PowerShell 5.1 put U+FEFF in front of the password piped into
+  `hash-password`. Fixed by making the hash without the pipe and checking it before use (RUNBOOK section 9).
+- Behind the proxy: admin sign-in gave no 403 (the `Origin` check sees the right `Host`), the cookie had `Secure`,
+  `HttpOnly`, `SameSite=Strict` and `Path=/admin`. Saving and publishing a tip and listing entries worked.
+- Redeploy of `server` on 14 November: a health check every 2 seconds for about six minutes saw only 200, and the
+  admin session survived.
+- Smoke test against the hosted server: `PASS`.
+
+## Phone check
+
+2026-11-17, one Android phone, a build pointing at Railway.
+
+| Check | Result |
+|---|---|
+| Start, Online, tip shown | passed; the phone registered as a new device |
+| Entry sent | passed; shown in the admin |
+| About 3,700 pasted characters | the text box cut it to 2000, the entry was sent |
+| Long entry read in full | passed, the last line `30 END` visible, but only by dragging the scrollbar; a swipe on the text does not scroll |
+| Caret while typing | not visible |
+| Paste menu on a long press | none; pasting worked through the keyboard's clipboard button |

@@ -95,8 +95,9 @@ A new server version is broken.
 What happens: go back to the previous version on Railway. That works because migrations only add, so the older
 server still finds what it reads (D-005). Steps: [RUNBOOK.md](RUNBOOK.md), section 2.
 
-Shown by: not yet. FILL AFTER DEPLOY: the rehearsal, and what Railway does with the pre-deploy step on a rollback.
-The local half is the test
+Shown by: a redeploy of the current server on Railway, with a health check every 2 seconds for about six minutes:
+no answer other than 200, and the admin stayed signed in. A rollback to an older deployment, and what Railway does
+with the pre-deploy step on it, have not been rehearsed. The local half is the test
 `A_migration_that_only_adds_a_column_keeps_old_entries_and_the_old_request_shape_still_gets_201`
 (`MigrationTests`).
 
@@ -113,8 +114,8 @@ Shown by:
 - Local rehearsal with a broken `0005` script: exit code 1, the journal still at `0004_entries.sql`, row counts
   unchanged, the added column rolled back, and the running server still passed the smoke test
   ([PROGRESS.md](PROGRESS.md), "Bad migration, local rehearsal").
-- On Railway, the same command is the pre-deploy step. FILL AFTER DEPLOY: that a failing pre-deploy really stops
-  the deploy there.
+- On Railway, the same command is the pre-deploy step. It ran on the first deploy (the smoke test, which needs the
+  tables, passed), but a failing pre-deploy has not been tried there.
 
 ### 7. The database is lost
 
@@ -135,7 +136,7 @@ The database password, the admin password hash or the service key gets out.
 
 What happens: change it on Railway and restart the service ([RUNBOOK.md](RUNBOOK.md), section 9). A new admin hash
 ends every admin session at once (D-020). A new service key keeps the sessions and needs the same value on the
-server and on the admin app. Secrets are only in `.env` locally (ignored by git) and planned as Railway
+server and on the admin app. Secrets are only in `.env` locally (ignored by git) and in Railway service
 variables. CI scans the whole git history with gitleaks on every push to `main` and every pull request (D-031).
 
 Shown by:
@@ -147,7 +148,7 @@ Shown by:
   `N14_startup_refuses_a_missing_address_a_missing_key_and_a_short_key_and_never_prints_the_key` (`AdminAppTests`).
 - `Register_returns_a_token_once_and_stores_only_its_hash` (`DeviceTests`).
 - The CI `secrets` job, green on 2026-10-29 ([PROGRESS.md](PROGRESS.md), "CI").
-- FILL AFTER DEPLOY: the rotation steps on Railway, done once.
+- On Railway the steps are in [RUNBOOK.md](RUNBOOK.md), section 9.
 
 ### 9. An old app meets a new server
 
@@ -294,14 +295,16 @@ Shown by (`AdminAppTests`, the server replaced by a fake handler where it has to
 
 ## Not done and why
 
-**Railway.** Nothing has been deployed yet, so none of these has run:
-- A deploy, and a failing pre-deploy step stopping it.
-- A rollback, and what Railway does with the pre-deploy step on a rollback.
-- A dump through the Railway TCP proxy, with the steps to open and close it.
-- Railway volume backups. It is not known yet whether the plan includes them.
-- Logs, restart and secret rotation on Railway.
+**Railway.** The stand runs there (server, admin app, PostgreSQL), deploys from `main` with the pre-deploy
+migration, passed the smoke test, and a server redeploy was measured with no failed answer. Not run there yet:
+- A failing pre-deploy step stopping a deploy.
+- A rollback to an older deployment, and what Railway does with the pre-deploy step on it.
+- A dump and a restore through the Railway TCP proxy.
+- Railway volume backups. It is not known whether the plan in use (the Trial) includes them.
+- Rotating the service key and the database password on Railway.
+- The "Wait for CI" switch was off for the first deploys, so a push could deploy before the tests finished.
 
-These are planned for the first deploy and are marked FILL AFTER DEPLOY in [RUNBOOK.md](RUNBOOK.md).
+The steps that are known are in [RUNBOOK.md](RUNBOOK.md); each untried one says so there.
 
 **Backups.**
 - No scheduled backup. A dump is taken by hand, so the loss window is the time since the last one. A schedule needs
@@ -326,15 +329,17 @@ These are planned for the first deploy and are marked FILL AFTER DEPLOY in [RUNB
   server's test that a huge sixth body is refused with 429.
 
 **Tests.**
-- The Unity EditMode tests (93) are not in CI. They need a Unity licence and a runner image with Unity, which is more
+- The Unity EditMode tests (100) are not in CI. They need a Unity licence and a runner image with Unity, which is more
   setup than the stand is worth. They are run by hand before a client change is merged (D-031).
 - The second 401 within 60 seconds of a registration has no test and no Play check.
 - A double click on Save in the tip form was tried once in a browser and gave one draft. The page reloaded after the
   first click, so the second click missed the button. A real double submit has not been produced in a browser.
 
 **Phone.**
-- The caret in the text box and reading a long entry in full were not checked on a device. They were skipped for lack
-  of time. A 2000-character entry was read to the end in the Editor (P10), never on a phone.
+- Checked once on an Android phone (2026-11-17, against Railway). A pasted text of about 3,700 characters was cut to
+  2000 by the text box, and the entry opened in full and read to its last line. Three problems, not fixed: the caret
+  is not visible while typing; a long press in the text box gives no paste menu (pasting works through the
+  keyboard's clipboard button); the full text scrolls only by dragging the scrollbar, not by swiping the text.
 
 **Features.**
 - Images in entries are not built. Migration 0005 is kept for them (D-015).

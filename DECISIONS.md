@@ -22,7 +22,7 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
 
 ## D-003 One Railway environment
 
-- Status: planned for slot 4.
+- Status: in use since the first Railway deploy (10 November 2026).
 - Choice: One hosted environment. The safe place to try a change first is the local `docker compose` stack.
 - Why: A second hosted copy costs money and this demo doesn't need it. I test every change locally first, with the
   same image and the same steps.
@@ -31,7 +31,8 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
 
 ## D-004 Migrations run only as a separate step before the new version starts
 
-- Status: compose in slot 0, Railway pre-deploy in slot 4.
+- Status: compose in slot 0, Railway pre-deploy in use since the first deploy. The pre-deploy step does not show as
+  its own stage in Railway's logs; the smoke test is what shows the migrations ran.
 - Choice: `dotnet JournalStack.Server.dll migrate` applies pending scripts and exits with an error code on
   failure. Compose runs it before the server. Railway runs it as the pre-deploy command. The server never
   migrates on startup.
@@ -347,7 +348,7 @@ Each entry has four parts: Choice, Why, Cost, Revisit if. Status says whether th
 - Status: in use. The workflow ran green on a pull request and on the push to `main` (2026-10-29).
 - Choice: One GitHub Actions file with two jobs. `server` runs the server test suite. `secrets` runs gitleaks over
   the full history with a pinned version and a checksum check. It runs on a push to `main` and on pull requests.
-  The Railway "Wait for CI" switch stays off until the first deploy, because Railway is not connected yet. The
+  The Railway "Wait for CI" switch was off for the first deploys. The
   Unity tests are not in CI.
 - Why: Every push to main runs the server tests and scans the whole git history for secrets. That gives me a chance
   to catch a broken migration or a leaked key before deploy. Unity tests need a Unity licence on the build machine.
