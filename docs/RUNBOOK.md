@@ -315,7 +315,7 @@ The app: stop Play, then delete its file for this server. It holds the device to
 The file is named after the server's host and port; for the local stack on port 8080:
 
 ```powershell
-Remove-Item "$env:USERPROFILE\AppData\LocalLow\DefaultCompany\JournalStack\state-127.0.0.1-8080.json"
+Remove-Item "$env:USERPROFILE\AppData\LocalLow\ASurzhenko\Journal Stack\state-127.0.0.1-8080.json"
 ```
 
 On next start the app registers as a new device.
