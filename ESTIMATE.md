@@ -54,3 +54,16 @@ runs wait on real systems.
 ## Deadline
 
 None yet. The call is scheduled after the build.
+
+## Variance (added 2026-11-18)
+
+I did not log focused minutes per session, so there is no exact total. My own count is about four to five
+working days of focused time, close to the upper half of the range above. Calendar time ran from 2026-10-23 to
+2026-11-09, part-time, plus small fixes and the docs after the first Railway deploys.
+
+Work beyond this estimate: the admin pages rebuilt as Razor Pages (slot 3b, about 2 to 2.5 h), the admin split
+into its own app (D-033, D-034), Delete my data (D-014, D-032), and the Local/Hosted switch in the Editor.
+Not done from the plan: images (slice D).
+
+The longest overrun was the first Railway setup, as listed under Risks: settings that looked right on screen but
+reached the container differently (see PROGRESS, "Railway, first deploy").
