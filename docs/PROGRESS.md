@@ -8,9 +8,10 @@
 - In `main`: slots 0 to 3b, slice B (the Unity client), slice D1 (delete my data), the admin app split (D-033,
   D-034), the local backup and restore drill, CI, and the Editor switch between the local and the hosted server
   (D-026). 252 server and admin tests and 100 Unity EditMode tests pass.
-- Checked once on an Android phone on 2026-11-17 (see "Phone check" below). Three client problems found, not fixed.
+- Checked on an Android phone on 2026-11-17 and 2026-11-20 (see "Phone check" below). The caret is fixed; two
+  client problems are not.
 - Not done: the Railway half of slot 6 (a dump and a restore through the TCP proxy, a rollback rehearsal, volume
-  backups), the images slice (0005), and the three phone problems. The list with reasons is in
+  backups), the images slice (0005), and the two phone problems. The list with reasons is in
   [WHAT-CAN-GO-WRONG.md](WHAT-CAN-GO-WRONG.md), "Not done and why".
 
 ## Sessions
@@ -551,5 +552,5 @@ The first attempt on 2026-10-30 did not run: the Docker engine did not answer an
 | Entry sent | passed; shown in the admin |
 | About 3,700 pasted characters | the text box cut it to 2000, the entry was sent |
 | Long entry read in full | passed, the last line `30 END` visible, but only by dragging the scrollbar; a swipe on the text does not scroll |
-| Caret while typing | not visible |
+| Caret while typing | not visible in the text box; Android edited the text in its own strip above the keyboard, where the caret was. Fixed by Hide Mobile Input on the field: rechecked 2026-11-20, typing goes straight into the text box and the caret shows |
 | Paste menu on a long press | none; pasting worked through the keyboard's clipboard button |

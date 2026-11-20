@@ -337,9 +337,11 @@ The steps that are known are in [RUNBOOK.md](RUNBOOK.md); each untried one says 
 
 **Phone.**
 - Checked once on an Android phone (2026-11-17, against Railway). A pasted text of about 3,700 characters was cut to
-  2000 by the text box, and the entry opened in full and read to its last line. Three problems, not fixed: the caret
-  is not visible while typing; a long press in the text box gives no paste menu (pasting works through the
-  keyboard's clipboard button); the full text scrolls only by dragging the scrollbar, not by swiping the text.
+  2000 by the text box, and the entry opened in full and read to its last line. The caret was not visible in the
+  text box, because Android edited the text in its own strip above the keyboard; with Hide Mobile Input on, typing
+  goes straight into the text box and the caret shows (checked on the phone, 2026-11-20). Two problems are not
+  fixed: a long press in the text box gives no paste menu (pasting works through the keyboard's clipboard button),
+  and the full text scrolls only by dragging the scrollbar, not by swiping the text.
 
 **Features.**
 - Images in entries are not built. Migration 0005 is kept for them (D-015).
